@@ -21,14 +21,6 @@ from typing import Optional
 
 import click
 from rich.console import Console
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TaskProgressColumn,
-    TextColumn,
-    TimeRemainingColumn,
-)
 from rich.table import Table as RichTable
 
 from paper_database.classifier import DeepSeekClassifier
@@ -415,36 +407,34 @@ def paper_fetch_abstracts(ctx, limit, stop_after):
                 "[dim]未设置 S2_API_KEY，跳过 Semantic Scholar，直接使用 OpenAlex[/]"
             )
 
-        # ── Phase 2: OpenAlex fallback ─────────────────────────────
+        # ── Phase 2: OpenAlex 兜底 (批量 DOI 查询) ─────────────
         remaining_papers = [p for p in all_papers if p.dblp_key not in s2_results]
         if remaining_papers:
+            doi_count = sum(1 for p in remaining_papers if p.doi.strip())
             console.print(
-                f"\n[bold]Phase 2: OpenAlex 兜底[/] ({len(remaining_papers)} 篇)"
+                f"\n[bold]Phase 2: OpenAlex 兜底[/] ({len(remaining_papers)} 篇, "
+                f"{doi_count} 篇有 DOI → 批量查询, "
+                f"{len(remaining_papers) - doi_count} 篇标题搜索)"
             )
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeRemainingColumn(),
-                console=console,
-            ) as progress:
-                task = progress.add_task(
-                    "OpenAlex 补全摘要", total=len(remaining_papers)
-                )
 
-                for paper in remaining_papers:
-                    abstract = oa.fetch_abstract(paper)
-                    if abstract:
-                        db.update_paper_abstract(
-                            paper.dblp_key, abstract, "openalex",
-                            citation_count=paper.citation_count,
-                            doi=paper.doi,
-                        )
-                        batch_oa += 1
-                    else:
-                        batch_failed += 1
-                    progress.update(task, advance=1)
+            oa_results = oa.fetch_abstracts_batch(remaining_papers)
+
+            # Write results to DB
+            paper_map = {p.dblp_key: p for p in remaining_papers}
+            for dblp_key, abstract in oa_results.items():
+                paper = paper_map.get(dblp_key)
+                db.update_paper_abstract(
+                    dblp_key, abstract, "openalex",
+                    citation_count=paper.citation_count if paper else 0,
+                    doi=paper.doi if paper else "",
+                )
+                batch_oa += 1
+
+            batch_failed = len(remaining_papers) - len(oa_results)
+            console.print(
+                f"  OpenAlex 成功: {batch_oa} 篇"
+                + (f", 失败: {batch_failed} 篇" if batch_failed else "")
+            )
 
         total_s2 += batch_s2
         total_oa += batch_oa

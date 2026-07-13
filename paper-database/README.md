@@ -69,37 +69,37 @@ DBLP XML 导出 URL 模式:
 
 可以添加多个 topic。`keywords` 用于构造分类 prompt。`output.columns` 定义 CSV 导出列和转换规则。
 
-### `config/classifier.yaml` — DeepSeek API 配置
+### `config/classifier.yaml` — 分类器配置（多 provider 支持）
 
 ```yaml
 classifier:
-  provider: deepseek
-  api_base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-pro"
+  # ── 当前使用的 provider ──
+  provider: deepseek          # deepseek | localhost | 任意 providers 中的 key
 
-  # Generation parameters
-  max_tokens: 500
-  temperature: 0.0
-  enable_thinking: false              # 开启后输出思维链推理
+  # ── Provider 配置列表 ──
+  providers:
+    deepseek:
+      api_base_url: "https://api.deepseek.com"
+      api_key: "{env:DEEPSEEK_API_KEY}"     # {env:VAR} 占位符自动解析
+      model: "deepseek-v4-pro"
+      max_tokens: 800
+      temperature: 0.0
+      enable_thinking: true                  # 思维链推理
 
-  # Concurrency
-  max_concurrency: 32
+    localhost:                               # 本地 / 兼容 OpenAI 的模型
+      api_base_url: "http://localhost:8800/v1"
+      api_key: "your-key-here"
+      model: "minimax-m27"
+      enable_thinking: false
 
-  # Retry / resilience
+  # ── 通用设置 (所有 provider 共享) ──
+  max_concurrency: 32      # 并发分类数
   timeout: 60
   max_retries: 3
-  strip_markdown_fence: true
-
-  prompt_template: |
-    你是计算机体系结构领域的论文分析专家。
-    ...
 ```
 
-默认模型 `deepseek-v4-pro` 是 DeepSeek 统一旗舰模型，同时支持标准对话和思维链推理。
-设置 `enable_thinking: true` 可开启思考模式。
-
-并发数: `max_concurrency` 控制同时调用 API 的论文数，默认 32。可根据 API 速率限制调整。
-```
+- `provider` 切换当前使用的 LLM，`providers` 下可配置多个备选
+- `api_key` 支持 `{env:VAR_NAME}` 占位符，运行时自动读取环境变量
 
 ## CLI 命令清单
 
@@ -145,36 +145,39 @@ cd /path/to/AI-config
 ./setup.sh ~/.claude/skills       # 手动指定目录
 ```
 
-## DeepSeek API Key
+## API Keys
 
-分类使用 DeepSeek API，需设置环境变量:
+### 分类
+
+支持多 provider，在 `config/classifier.yaml` 的 `providers` 中配置各 provider 的 `api_key`。
+支持 `{env:VAR_NAME}` 占位符。详见上方配置说明。
+
+### 摘要获取
+
+摘要获取流程：**Semantic Scholar (Phase 1)** → **OpenAlex 批量 (Phase 2)** 兜底。
+
+| Key | 用途 | 获取 | 推荐度 |
+|-----|------|------|--------|
+| `S2_API_KEY` | Semantic Scholar — DOI 批量 + 标题搜索 | https://www.semanticscholar.org/product/api | 推荐 |
+| `OPENALEX_API_KEY` | OpenAlex — DOI 批量查询（50 篇/批，10 credits/批） | https://openalex.org/settings/api | 申请方便，**强烈推荐** |
 
 ```bash
-export DEEPSEEK_API_KEY="sk-your-api-key"
+export S2_API_KEY="your-key"
+export OPENALEX_API_KEY="your-key"
 ```
-
-- 获取 API Key: https://platform.deepseek.com/api_keys
-- API 文档: https://api-docs.deepseek.com/
-- 默认模型 `deepseek-v4-pro`，可在 `config/classifier.yaml` 中切换
-- 设置 `enable_thinking: true` 可开启思维链推理模式
-
-## Semantic Scholar API Key
-
-设置环境变量以获得更高速率 (100 req/s vs 1 req/s):
-```bash
-export S2_API_KEY="your-api-key"
-```
-免费注册: https://www.semanticscholar.org/product/api
 
 ## 数据来源
 
-| 步骤 | API | 获取内容 |
-|------|-----|---------|
-| ① 论文列表 | DBLP XML 导出 | title, authors, year, doi, dblp_key |
-| ② 摘要(优先) | Semantic Scholar | abstract (纯文本), citations |
-| ③ 摘要(备用) | OpenAlex | abstract (倒排索引需重构) |
+| 步骤 | API | 获取内容 | 备注 |
+|------|-----|---------|------|
+| ① 论文列表 | DBLP XML 导出 | title, authors, year, doi, dblp_key | 比搜索 API 更准确 |
+| ② 摘要(优先) | Semantic Scholar | abstract (纯文本), citations | 支持 DOI 批量 (500/批) |
+| ③ 摘要(兜底) | OpenAlex | abstract (倒排索引) | **DOI 批量 50/批, 10 credits/批** |
 
 DBLP XML 导出比搜索 API 更准确 — 搜索 API 存在子串匹配问题（如 `venue:MICRO` 会匹配到 Microprocessors 等无关期刊）。
+
+OpenAlex 批量优化: 有 DOI 的论文自动 50 篇一组合并为一个 API 请求（pipe 分隔），
+相比逐篇查询节省 ~80% credits。无 DOI 的论文回退到标题搜索。
 
 ## 数据库
 
