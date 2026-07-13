@@ -20,7 +20,14 @@ from typing import Optional
 
 import click
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table as RichTable
 
 from paper_database.classifier import DeepSeekClassifier
@@ -256,9 +263,14 @@ def paper_fetch_abstracts(ctx, limit):
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task("OpenAlex...", total=len(remaining))
+            task = progress.add_task(
+                "OpenAlex 补全摘要", total=len(remaining)
+            )
 
             for paper in remaining:
                 abstract = oa.fetch_abstract(paper)
