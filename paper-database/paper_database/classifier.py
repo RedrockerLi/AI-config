@@ -43,7 +43,6 @@ class DeepSeekClassifier:
         self.temperature = config.temperature
         self.enable_thinking = config.enable_thinking
         self.max_concurrency = config.max_concurrency
-        self.prompt_template = config.prompt_template
         self.timeout = config.timeout
         self.max_retries = config.max_retries
         self.strip_fence = config.strip_markdown_fence
@@ -217,7 +216,7 @@ class DeepSeekClassifier:
 
     def _build_prompt(self, paper: PaperMeta, topic: TopicConfig) -> str:
         abstract = paper.abstract or "（无摘要，仅根据标题判断）"
-        return self.prompt_template.format(
+        return topic.prompt_template.format(
             topic_name=topic.name,
             topic_description=topic.description,
             topic_keywords=", ".join(topic.keywords),
@@ -232,6 +231,7 @@ class DeepSeekClassifier:
             "model": self.model,
             "messages": messages,
             "max_tokens": self.max_tokens,
+            "response_format": {"type": "json_object"},
         }
 
         # deepseek-v4-pro supports both temperature and thinking mode

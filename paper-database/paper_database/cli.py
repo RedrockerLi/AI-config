@@ -509,7 +509,7 @@ def survey_classify(ctx, survey_id, dry_run, limit, start, no_export):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         exporter = Exporter(survey_db)
         filepath = exporter.export(
-            survey_id, topic_cfg, output_path, relevant_only=False
+            survey_id, topic_cfg, output_path, relevant_only=True
         )
         console.print(f"[green]✓[/] CSV 已导出: {filepath}")
 

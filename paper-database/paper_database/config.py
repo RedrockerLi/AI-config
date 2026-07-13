@@ -71,6 +71,7 @@ class TopicConfig:
     name: str
     description: str = ""
     keywords: list[str] = field(default_factory=list)
+    prompt_template: str = ""
     output: OutputConfig = field(default_factory=OutputConfig)
 
     @classmethod
@@ -80,6 +81,7 @@ class TopicConfig:
             name=d["name"],
             description=d.get("description", ""),
             keywords=d.get("keywords", []),
+            prompt_template=d.get("prompt_template", ""),
             output=OutputConfig.from_dict(d.get("output", {})),
         )
 
@@ -89,7 +91,6 @@ class ClassifierConfig:
     provider: str = "deepseek"
     api_base_url: str = "https://api.deepseek.com"
     model: str = "deepseek-v4-pro"
-    prompt_template: str = ""
     max_tokens: int = 500
     temperature: float = 0.0
     enable_thinking: bool = False
@@ -104,7 +105,6 @@ class ClassifierConfig:
             provider=d.get("provider", "deepseek"),
             api_base_url=d.get("api_base_url", "https://api.deepseek.com"),
             model=d.get("model", "deepseek-v4-pro"),
-            prompt_template=d.get("prompt_template", ""),
             max_tokens=d.get("max_tokens", 500),
             temperature=d.get("temperature", 0.0),
             enable_thinking=d.get("enable_thinking", False),
