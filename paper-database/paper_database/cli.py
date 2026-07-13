@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -52,6 +54,18 @@ def _get_db(db_path: str = "papers.db", config_dir: str = "config") -> Database:
 def _resolve_config(config_dir: str = "config"):
     """Reload and return config."""
     return reload_config(config_dir)
+
+
+def _get_survey_db(survey_id: int, config_dir: str = "config") -> Database:
+    """Open a survey-specific database by ID. Exits on not-found."""
+    project_root = Path(config_dir).resolve().parent
+    survey_path = project_root / "surveys" / f"survey_{survey_id}.db"
+    if not survey_path.exists():
+        console.print(f"[red]✗[/] Survey #{survey_id} 不存在")
+        sys.exit(1)
+    db = Database(str(survey_path))
+    db.init_survey_db()
+    return db
 
 
 # ── Default paths (relative to this file, CWD-independent) ──────
@@ -198,33 +212,40 @@ def paper_fetch_abstracts(ctx, limit):
         for row in papers_without
     ]
 
-    s2 = SemanticScholarFetcher()
+    s2 = None
     oa = OpenAlexFetcher()
 
     s2_count = 0
     oa_count = 0
     failed = 0
 
-    # ── Phase 1: Semantic Scholar ──────────────────────────────
-    doi_count = sum(1 for p in all_papers if p.doi.strip())
-    console.print(
-        f"\n[bold]Phase 1: Semantic Scholar[/] "
-        f"({doi_count} 篇有 DOI → batch, 其余标题搜索)"
-    )
-    s2_results = s2.fetch_abstracts_batch(all_papers)
+    # ── Phase 1: Semantic Scholar (only with API key) ──────────
+    s2_results: dict = {}
+    if os.environ.get("S2_API_KEY"):
+        s2 = SemanticScholarFetcher()
+        doi_count = sum(1 for p in all_papers if p.doi.strip())
+        console.print(
+            f"\n[bold]Phase 1: Semantic Scholar[/] "
+            f"({doi_count} 篇有 DOI → batch, 其余标题搜索)"
+        )
+        s2_results = s2.fetch_abstracts_batch(all_papers)
 
-    # Write S2 results to DB
-    for p in all_papers:
-        abstract = s2_results.get(p.dblp_key, "")
-        if abstract:
-            db.update_paper_abstract(
-                p.dblp_key, abstract, "semantic_scholar",
-                citation_count=p.citation_count,
-                doi=p.doi,
-            )
-            s2_count += 1
+        # Write S2 results to DB
+        for p in all_papers:
+            abstract = s2_results.get(p.dblp_key, "")
+            if abstract:
+                db.update_paper_abstract(
+                    p.dblp_key, abstract, "semantic_scholar",
+                    citation_count=p.citation_count,
+                    doi=p.doi,
+                )
+                s2_count += 1
 
-    console.print(f"  S2 成功: {s2_count} 篇")
+        console.print(f"  S2 成功: {s2_count} 篇")
+    else:
+        console.print(
+            "[dim]未设置 S2_API_KEY，跳过 Semantic Scholar，直接使用 OpenAlex[/]"
+        )
 
     # ── Phase 2: OpenAlex fallback ─────────────────────────────
     remaining = [p for p in all_papers if p.dblp_key not in s2_results]
@@ -306,9 +327,9 @@ def survey():
 @click.option("--year-filter", default="", help="年份范围, 如 2020-2026")
 @click.pass_context
 def survey_create(ctx, topic, name, venue_filter, year_filter):
-    """创建新调研."""
+    """创建新调研 (独立调查数据库)."""
     config = _resolve_config(ctx.obj["config_dir"])
-    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
+    paper_db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
 
     topic_cfg = config.get_topic(topic)
     if topic_cfg is None:
@@ -326,16 +347,26 @@ def survey_create(ctx, topic, name, venue_filter, year_filter):
         if len(parts) == 2:
             yf = (int(parts[0]), int(parts[1]))
 
-    survey_id = db.create_survey(
-        topic_cfg,
-        name=name,
-        cli_tool=config.classifier.model,
-        venue_filter=vf,
-        year_filter=yf,
-    )
+    # Generate survey name
+    survey_name = name or f"{topic}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-    stats = db.survey_stats(survey_id)
+    # Get next survey ID
+    survey_id = Database.get_next_survey_id(ctx.obj["db_path"])
+
+    # Create survey database (copies matching papers + venues from main DB)
+    try:
+        survey_db = paper_db.create_survey_db(
+            survey_id, survey_name, topic_cfg,
+            cli_tool=config.classifier.model,
+            venue_filter=vf, year_filter=yf,
+        )
+    except ValueError as e:
+        console.print(f"[red]✗[/] {e}")
+        sys.exit(1)
+
+    stats = survey_db.survey_stats(survey_id)
     console.print(f"[green]✓[/] 创建调研 #{survey_id}: {topic_cfg.name}")
+    console.print(f"   数据库: surveys/survey_{survey_id}.db")
     console.print(f"   待分类论文: {stats['total']} 篇")
 
 
@@ -343,8 +374,11 @@ def survey_create(ctx, topic, name, venue_filter, year_filter):
 @click.pass_context
 def survey_list(ctx):
     """列出所有调研."""
-    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
-    surveys = db.list_surveys()
+    surveys = Database.list_surveys_from_directory(ctx.obj["db_path"])
+
+    if not surveys:
+        console.print("[dim]暂无调研[/]")
+        return
 
     table = RichTable(title="Surveys")
     table.add_column("ID")
@@ -369,13 +403,13 @@ def survey_list(ctx):
 @click.pass_context
 def survey_stats(ctx, survey_id):
     """查看调研进度."""
-    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
-    s = db.get_survey(survey_id)
+    survey_db = _get_survey_db(survey_id, ctx.obj["config_dir"])
+    s = survey_db.get_survey(survey_id)
     if s is None:
         console.print(f"[red]✗[/] Survey #{survey_id} 不存在")
         sys.exit(1)
 
-    stats = db.survey_stats(survey_id)
+    stats = survey_db.survey_stats(survey_id)
 
     console.print(f"\n[bold]Survey #{survey_id}[/]: {s['name']}")
     console.print(f"  Topic: {s['topic_key']}")
@@ -392,10 +426,14 @@ def survey_stats(ctx, survey_id):
 @click.confirmation_option(prompt="确认删除此调研及所有分类结果?")
 @click.pass_context
 def survey_delete(ctx, survey_id):
-    """删除调研."""
-    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
-    db.delete_survey(survey_id)
-    console.print(f"[green]✓[/] 已删除 Survey #{survey_id}")
+    """删除调研 (删除对应的数据库文件)."""
+    project_root = Path(ctx.obj["config_dir"]).resolve().parent
+    survey_path = project_root / "surveys" / f"survey_{survey_id}.db"
+    if not survey_path.exists():
+        console.print(f"[red]✗[/] Survey #{survey_id} 不存在")
+        sys.exit(1)
+    survey_path.unlink()
+    console.print(f"[green]✓[/] 已删除 Survey #{survey_id} (文件已删除)")
 
 
 @survey.command("reset")
@@ -404,8 +442,8 @@ def survey_delete(ctx, survey_id):
 @click.pass_context
 def survey_reset(ctx, survey_id):
     """清空调研的分类结果，保留调研和论文数据."""
-    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
-    db.reset_survey(survey_id)
+    survey_db = _get_survey_db(survey_id, ctx.obj["config_dir"])
+    survey_db.reset_survey(survey_id)
     console.print(f"[green]✓[/] 已清空 Survey #{survey_id} 的分类结果")
 
 
@@ -414,13 +452,14 @@ def survey_reset(ctx, survey_id):
 @click.option("--dry-run", is_flag=True, default=False, help="只打印 prompt，不实际调 API")
 @click.option("--limit", "-l", type=int, default=None, help="最大分类数量")
 @click.option("--start", type=int, default=1, help="从第 N 篇开始 (断点续传)")
+@click.option("--no-export", is_flag=True, default=False, help="不自动导出 CSV")
 @click.pass_context
-def survey_classify(ctx, survey_id, dry_run, limit, start):
-    """运行分类 (DeepSeek API 并发)."""
+def survey_classify(ctx, survey_id, dry_run, limit, start, no_export):
+    """运行分类 (DeepSeek API 并发), 完成后自动导出 CSV."""
     config = _resolve_config(ctx.obj["config_dir"])
-    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
+    survey_db = _get_survey_db(survey_id, ctx.obj["config_dir"])
 
-    s = db.get_survey(survey_id)
+    s = survey_db.get_survey(survey_id)
     if s is None:
         console.print(f"[red]✗[/] Survey #{survey_id} 不存在")
         sys.exit(1)
@@ -435,7 +474,7 @@ def survey_classify(ctx, survey_id, dry_run, limit, start):
     if dry_run:
         console.print("[yellow]DRY RUN 模式 — 只打印 prompt，不调 API[/]\n")
 
-    stats = db.survey_stats(survey_id)
+    stats = survey_db.survey_stats(survey_id)
     console.print(f"Survey #{survey_id}: {stats['unclassified']} 篇待分类")
     console.print(
         f"[dim]Model: {config.classifier.model}, "
@@ -451,7 +490,7 @@ def survey_classify(ctx, survey_id, dry_run, limit, start):
         console.print(f"  [{done}] {status} {title[:70]}...")
 
     asyncio.run(classifier.run_survey(
-        db, survey_id, topic_cfg,
+        survey_db, survey_id, topic_cfg,
         dry_run=dry_run,
         limit=limit,
         start=start,
@@ -459,9 +498,20 @@ def survey_classify(ctx, survey_id, dry_run, limit, start):
     ))
 
     # Show final stats
-    final_stats = db.survey_stats(survey_id)
+    final_stats = survey_db.survey_stats(survey_id)
     console.print(f"\n[green]✓[/] 完成! 相关: {final_stats['relevant']} / "
                   f"已分类: {final_stats['classified']}")
+
+    # Auto-export CSV (unless --no-export or dry-run)
+    if not dry_run and not no_export:
+        safe_name = s["name"].replace(" ", "_").replace("/", "_")
+        output_path = Path("results") / f"survey_{survey_id}_{safe_name}"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        exporter = Exporter(survey_db)
+        filepath = exporter.export(
+            survey_id, topic_cfg, output_path, relevant_only=False
+        )
+        console.print(f"[green]✓[/] CSV 已导出: {filepath}")
 
 
 @survey.command("preview")
@@ -472,9 +522,9 @@ def survey_classify(ctx, survey_id, dry_run, limit, start):
 def survey_preview(ctx, survey_id, relevant_only, limit):
     """终端预览分类结果."""
     config = _resolve_config(ctx.obj["config_dir"])
-    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
+    survey_db = _get_survey_db(survey_id, ctx.obj["config_dir"])
 
-    s = db.get_survey(survey_id)
+    s = survey_db.get_survey(survey_id)
     if s is None:
         console.print(f"[red]✗[/] Survey #{survey_id} 不存在")
         sys.exit(1)
@@ -484,7 +534,7 @@ def survey_preview(ctx, survey_id, relevant_only, limit):
         console.print(f"[red]✗[/] Topic 配置不存在")
         sys.exit(1)
 
-    exporter = Exporter(db)
+    exporter = Exporter(survey_db)
     exporter.preview(survey_id, topic_cfg, relevant_only=relevant_only, limit=limit)
 
 
@@ -494,11 +544,11 @@ def survey_preview(ctx, survey_id, relevant_only, limit):
 @click.option("--relevant-only", is_flag=True, default=False, help="只导出相关论文")
 @click.pass_context
 def survey_export(ctx, survey_id, output, relevant_only):
-    """导出结果到 Excel/CSV."""
+    """导出结果到 CSV."""
     config = _resolve_config(ctx.obj["config_dir"])
-    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
+    survey_db = _get_survey_db(survey_id, ctx.obj["config_dir"])
 
-    s = db.get_survey(survey_id)
+    s = survey_db.get_survey(survey_id)
     if s is None:
         console.print(f"[red]✗[/] Survey #{survey_id} 不存在")
         sys.exit(1)
@@ -512,7 +562,7 @@ def survey_export(ctx, survey_id, output, relevant_only):
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    exporter = Exporter(db)
+    exporter = Exporter(survey_db)
     filepath = exporter.export(
         survey_id, topic_cfg, output_path, relevant_only=relevant_only
     )

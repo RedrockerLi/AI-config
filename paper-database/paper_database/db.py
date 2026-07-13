@@ -15,7 +15,7 @@ from paper_database.fetcher.base import PaperMeta
 
 # ── Schema ──────────────────────────────────────────────────────
 
-SCHEMA = """
+PAPER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS venue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     key TEXT UNIQUE NOT NULL,
@@ -44,9 +44,40 @@ CREATE TABLE IF NOT EXISTS paper (
 
 CREATE INDEX IF NOT EXISTS idx_paper_venue_year ON paper(venue_id, year);
 CREATE INDEX IF NOT EXISTS idx_paper_dblp_key ON paper(dblp_key);
+"""
+
+SURVEY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS venue (
+    id INTEGER PRIMARY KEY,
+    key TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    ccf_rank TEXT DEFAULT '',
+    dblp_url_prefix TEXT NOT NULL,
+    year_start INTEGER NOT NULL,
+    year_end INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS paper (
+    id INTEGER PRIMARY KEY,
+    dblp_key TEXT UNIQUE,
+    title TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    venue_id INTEGER REFERENCES venue(id),
+    authors TEXT DEFAULT '[]',
+    doi TEXT DEFAULT '',
+    abstract TEXT DEFAULT '',
+    abstract_source TEXT DEFAULT '',
+    citation_count INTEGER DEFAULT 0,
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    abstract_fetched_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_paper_venue_year ON paper(venue_id, year);
+CREATE INDEX IF NOT EXISTS idx_paper_dblp_key ON paper(dblp_key);
 
 CREATE TABLE IF NOT EXISTS survey (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     topic_key TEXT NOT NULL,
     topic_snapshot TEXT DEFAULT '',
@@ -129,15 +160,20 @@ class Database:
     # ── Init ─────────────────────────────────────────────────
 
     def init_db(self):
-        """Create all tables if they don't exist."""
-        self.conn.executescript(SCHEMA)
-        # Migrate existing databases: add analysis_json column if missing
+        """Create venue + paper tables (main database)."""
+        self.conn.executescript(PAPER_SCHEMA)
+        self.conn.commit()
+
+    def init_survey_db(self):
+        """Create all tables for a survey-specific database."""
+        self.conn.executescript(SURVEY_SCHEMA)
+        # Migrate: add analysis_json column if missing (for older survey DBs)
         try:
             self.conn.execute(
                 "ALTER TABLE survey_result ADD COLUMN analysis_json TEXT DEFAULT ''"
             )
         except sqlite3.OperationalError:
-            pass  # Column already exists
+            pass
         self.conn.commit()
 
     # ── Venue CRUD ───────────────────────────────────────────
@@ -293,35 +329,66 @@ class Database:
             "by_venue_year": [dict(r) for r in rows],
         }
 
-    # ── Survey CRUD ──────────────────────────────────────────
+    # ── Survey DB creation (on main Database) ────────────────
 
-    def create_survey(
-        self, topic: TopicConfig, name: str = "",
+    @staticmethod
+    def get_next_survey_id(db_path: str | Path) -> int:
+        """Scan surveys/ directory and return next available survey ID."""
+        surveys_dir = Path(db_path).parent / "surveys"
+        if not surveys_dir.exists():
+            return 1
+        ids = []
+        for f in surveys_dir.glob("survey_*.db"):
+            try:
+                ids.append(int(f.stem.split("_", 1)[1]))
+            except (IndexError, ValueError):
+                continue
+        return max(ids, default=0) + 1
+
+    @staticmethod
+    def list_surveys_from_directory(db_path: str | Path) -> list[dict]:
+        """Scan surveys/ directory and read metadata from all survey DBs."""
+        surveys_dir = Path(db_path).parent / "surveys"
+        if not surveys_dir.exists():
+            return []
+
+        surveys = []
+        for f in sorted(surveys_dir.glob("survey_*.db"), reverse=True):
+            try:
+                sdb = Database(str(f))
+                rows = sdb.conn.execute(
+                    "SELECT * FROM survey ORDER BY created_at DESC"
+                ).fetchall()
+                for r in rows:
+                    surveys.append(dict(r))
+            except Exception:
+                continue
+        return surveys
+
+    def create_survey_db(
+        self,
+        survey_id: int,
+        name: str,
+        topic: TopicConfig,
         cli_tool: str = "",
         venue_filter: Optional[list[str]] = None,
         year_filter: Optional[tuple[int, int]] = None,
-    ) -> int:
-        """Create a new survey and populate survey_result rows.
+    ) -> "Database":
+        """Create a survey database file with snapshot of matching papers.
 
-        Returns the new survey_id.
+        Returns the survey Database instance (already initialized).
         """
-        topic_snapshot = json.dumps({
-            "key": topic.key,
-            "name": topic.name,
-            "description": topic.description,
-            "keywords": topic.keywords,
-        }, ensure_ascii=False)
+        papers_dir = Path(self.db_path).parent
+        surveys_dir = papers_dir / "surveys"
+        surveys_dir.mkdir(parents=True, exist_ok=True)
+        survey_db_path = surveys_dir / f"survey_{survey_id}.db"
 
-        cursor = self.conn.execute(
-            """INSERT INTO survey (name, topic_key, topic_snapshot, cli_tool, status)
-               VALUES (?, ?, ?, ?, 'pending')""",
-            (name or f"{topic.key}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-             topic.key, topic_snapshot, cli_tool),
-        )
-        survey_id = cursor.lastrowid
+        # Create and initialize the survey DB
+        survey_db = Database(str(survey_db_path))
+        survey_db.init_survey_db()
 
-        # Populate survey_result for all matching papers
-        where_clauses = []
+        # Build WHERE clause for paper matching
+        where_clauses = ["1=1"]
         params: list = []
 
         if venue_filter:
@@ -335,15 +402,76 @@ class Database:
             where_clauses.append("p.year >= ? AND p.year <= ?")
             params.extend([year_filter[0], year_filter[1]])
 
-        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        where_sql = " AND ".join(where_clauses)
 
-        self.conn.execute(
-            f"""INSERT OR IGNORE INTO survey_result (survey_id, paper_id)
-                SELECT ?, p.id FROM paper p {where_sql}""",
-            [survey_id] + params,
+        # Get matching paper rows
+        paper_rows = self.conn.execute(
+            f"""SELECT p.* FROM paper p WHERE {where_sql}""",
+            params,
+        ).fetchall()
+
+        if not paper_rows:
+            raise ValueError("No papers match the survey criteria")
+
+        # Collect unique venue IDs
+        venue_ids = set(row["venue_id"] for row in paper_rows)
+
+        # Copy venue records (preserving IDs)
+        for vid in venue_ids:
+            vrow = self.conn.execute(
+                "SELECT * FROM venue WHERE id = ?", (vid,)
+            ).fetchone()
+            if vrow:
+                survey_db.conn.execute(
+                    """INSERT INTO venue (id, key, name, type, ccf_rank,
+                       dblp_url_prefix, year_start, year_end)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (vrow["id"], vrow["key"], vrow["name"], vrow["type"],
+                     vrow["ccf_rank"], vrow["dblp_url_prefix"],
+                     vrow["year_start"], vrow["year_end"]),
+                )
+
+        # Copy paper records (preserving IDs)
+        for row in paper_rows:
+            survey_db.conn.execute(
+                """INSERT INTO paper (id, dblp_key, title, year, venue_id,
+                   authors, doi, abstract, abstract_source, citation_count,
+                   fetched_at, abstract_fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (row["id"], row["dblp_key"], row["title"], row["year"],
+                 row["venue_id"], row["authors"], row["doi"],
+                 row["abstract"], row["abstract_source"],
+                 row["citation_count"], row["fetched_at"],
+                 row["abstract_fetched_at"]),
+            )
+
+        # Topic snapshot
+        topic_snapshot = json.dumps({
+            "key": topic.key,
+            "name": topic.name,
+            "description": topic.description,
+            "keywords": topic.keywords,
+        }, ensure_ascii=False)
+
+        # Insert survey row with explicit ID
+        survey_db.conn.execute(
+            """INSERT INTO survey (id, name, topic_key, topic_snapshot,
+               cli_tool, status, created_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+            (survey_id, name, topic.key, topic_snapshot, cli_tool,
+             datetime.now(timezone.utc).isoformat()),
         )
-        self.conn.commit()
-        return survey_id
+
+        # Populate survey_result (one row per copied paper)
+        survey_db.conn.executemany(
+            "INSERT INTO survey_result (survey_id, paper_id) VALUES (?, ?)",
+            [(survey_id, row["id"]) for row in paper_rows],
+        )
+
+        survey_db.conn.commit()
+        return survey_db
+
+    # ── Survey CRUD (works on any Database, main or survey) ───
 
     def get_survey(self, survey_id: int) -> Optional[dict]:
         row = self.conn.execute(
