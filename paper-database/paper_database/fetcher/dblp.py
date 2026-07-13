@@ -79,10 +79,11 @@ class DBLPFetcher(AbstractFetcher):
             print(f"  [DBLP] XML parse error for {venue.key} {year}: {e}")
             return papers
 
-        # Conference: <proceedings> → <inproceedings>
-        # Journal: <dblp> → <article>
-        for child in root:
-            if child.tag not in ("inproceedings", "article", "proceedings"):
+        # Conference: <inproceedings>, Journal: <article>
+        # DBLP XML nests papers inside <dblpcites>/<r>/<inproceedings>,
+        # so we must recursively search, not just iterate root children.
+        for child in root.iter():
+            if child.tag not in ("inproceedings", "article"):
                 continue
 
             # For journals, filter by year

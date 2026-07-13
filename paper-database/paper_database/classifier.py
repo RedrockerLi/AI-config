@@ -115,6 +115,7 @@ class CLIClassifier:
                 )
 
                 if dry_run:
+                    total_processed += 1
                     prompt = self._build_prompt(paper, topic)
                     print(f"\n{'='*60}")
                     print(f"[DRY RUN] Paper: {paper.title[:80]}...")
@@ -123,7 +124,6 @@ class CLIClassifier:
                     print(f"{'='*60}")
                     if limit and total_processed >= limit:
                         return
-                    total_processed += 1
                     continue
 
                 # Real classification
