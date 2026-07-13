@@ -1,9 +1,12 @@
 # Venue 配置文件 — 定义需要检索的会议和期刊
 #
 # dblp_url_prefix: DBLP XML 导出的 URL 路径
-#   会议: conf/{abbrev}  →  https://dblp.org/db/conf/{abbrev}/{abbrev}{year}.xml
-#   期刊: journals/{abbrev} → https://dblp.org/db/journals/{abbrev}/{abbrev}.xml
+#   会议: conf/{abbrev}  →  https://dblp.org/db/conf/{abbrev}/index.xml
+#   期刊: journals/{abbrev} → https://dblp.org/db/journals/{abbrev}/index.xml
 #   在 https://dblp.org 搜索 venue 确认正确的路径
+#
+# 研究方向: CGRA、数据流架构、空间架构、GPU
+# 依据: CCF 第七版（2026）计算机体系结构/并行与分布计算/存储系统
 
 venues:
   # ════════════════ CCF-A 会议 (近10年: 2016-2026) ════════════════
@@ -81,6 +84,65 @@ venues:
     year_end: 2026
 
   # ════════════════ CCF-B 会议 (近5年: 2021-2026) ════════════════
+  # 体系结构核心
+  - key: pact
+    name: "PACT"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/IEEEpact"
+    year_start: 2021
+    year_end: 2026
+
+  - key: cgo
+    name: "CGO"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/cgo"
+    year_start: 2021
+    year_end: 2026
+
+  - key: ics
+    name: "ICS"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/ics"
+    year_start: 2021
+    year_end: 2026
+
+  - key: icpp
+    name: "ICPP"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/icpp"
+    year_start: 2021
+    year_end: 2026
+
+  - key: iccd
+    name: "ICCD"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/iccd"
+    year_start: 2021
+    year_end: 2026
+
+  # FPGA / 可重构计算
+  - key: fpga
+    name: "FPGA"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/fpga"
+    year_start: 2021
+    year_end: 2026
+
+  - key: hipeac
+    name: "HiPEAC"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/hipeac"
+    year_start: 2021
+    year_end: 2026
+
+  # EDA / 设计自动化
   - key: iccad
     name: "ICCAD"
     type: conference
@@ -105,45 +167,44 @@ venues:
     year_start: 2021
     year_end: 2026
 
-  # ════════════════ CCF-C 会议 (近5年: 2021-2026) ════════════════
-  - key: cases
-    name: "CASES"
-    type: conference
-    ccf_rank: C
-    dblp_url_prefix: "conf/cases"
-    year_start: 2021
-    year_end: 2026
-
-  - key: fccm
-    name: "FCCM"
-    type: conference
-    ccf_rank: C
-    dblp_url_prefix: "conf/fccm"
-    year_start: 2021
-    year_end: 2026
-
-  - key: fpl
-    name: "FPL"
-    type: conference
-    ccf_rank: C
-    dblp_url_prefix: "conf/fpl"
-    year_start: 2021
-    year_end: 2026
-
-  - key: fpt
-    name: "FPT"
-    type: conference
-    ccf_rank: C
-    dblp_url_prefix: "conf/fpt"
-    year_start: 2021
-    year_end: 2026
-
   # ════════════════ CCF-B 期刊 (近5年: 2021-2026) ════════════════
   - key: todaes
     name: "ACM Transactions on Design Automation of Electronic Systems"
     type: journal
     ccf_rank: B
     dblp_url_prefix: "journals/todaes"
+    year_start: 2021
+    year_end: 2026
+
+  - key: trets
+    name: "ACM Transactions on Reconfigurable Technology and Systems"
+    type: journal
+    ccf_rank: B
+    dblp_url_prefix: "journals/trets"
+    year_start: 2021
+    year_end: 2026
+
+  - key: tecs
+    name: "ACM Transactions on Embedded Computing Systems"
+    type: journal
+    ccf_rank: B
+    dblp_url_prefix: "journals/tecs"
+    year_start: 2021
+    year_end: 2026
+
+  - key: tvlsi
+    name: "IEEE Transactions on Very Large Scale Integration (VLSI) Systems"
+    type: journal
+    ccf_rank: B
+    dblp_url_prefix: "journals/tvlsi"
+    year_start: 2021
+    year_end: 2026
+
+  - key: jpdc
+    name: "Journal of Parallel and Distributed Computing"
+    type: journal
+    ccf_rank: B
+    dblp_url_prefix: "journals/jpdc"
     year_start: 2021
     year_end: 2026
 
@@ -160,14 +221,5 @@ venues:
     type: journal
     ccf_rank: B
     dblp_url_prefix: "journals/pc"
-    year_start: 2021
-    year_end: 2026
-
-  # ════════════════ CCF-C 期刊 (近5年: 2021-2026) ════════════════
-  - key: jetc
-    name: "ACM Journal on Emerging Technologies in Computing Systems"
-    type: journal
-    ccf_rank: C
-    dblp_url_prefix: "journals/jetc"
     year_start: 2021
     year_end: 2026

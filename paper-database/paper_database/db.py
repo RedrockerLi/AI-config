@@ -44,6 +44,15 @@ CREATE TABLE IF NOT EXISTS paper (
 
 CREATE INDEX IF NOT EXISTS idx_paper_venue_year ON paper(venue_id, year);
 CREATE INDEX IF NOT EXISTS idx_paper_dblp_key ON paper(dblp_key);
+
+CREATE TABLE IF NOT EXISTS fetched_log (
+    venue_key TEXT NOT NULL,
+    year INTEGER NOT NULL,
+    xml_url TEXT NOT NULL PRIMARY KEY,
+    paper_count INTEGER DEFAULT 0,
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_fetched_log_venue_year ON fetched_log(venue_key, year);
 """
 
 SURVEY_SCHEMA = """
@@ -293,6 +302,46 @@ class Database:
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def count_papers_for_venue_year(self, venue_key: str, year: int) -> int:
+        """Return number of papers for a specific venue + year combination."""
+        row = self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM paper
+               JOIN venue ON paper.venue_id = venue.id
+               WHERE venue.key = ? AND paper.year = ?""",
+            (venue_key, year),
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    # ── Fetched URL tracking (for resume / multi-volume) ─────
+
+    def mark_url_fetched(
+        self, venue_key: str, year: int, xml_url: str, paper_count: int = 0
+    ):
+        """Record that a specific DBLP XML URL was successfully downloaded."""
+        self.conn.execute(
+            """INSERT OR REPLACE INTO fetched_log
+               (venue_key, year, xml_url, paper_count, fetched_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (venue_key, year, xml_url, paper_count,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        self.conn.commit()
+
+    def get_fetched_urls(self, venue_key: str) -> dict[int, set[str]]:
+        """Return {year: {xml_url, ...}} of previously fetched XML URLs."""
+        rows = self.conn.execute(
+            """SELECT year, xml_url FROM fetched_log
+               WHERE venue_key = ?""",
+            (venue_key,),
+        ).fetchall()
+        result: dict[int, set[str]] = {}
+        for r in rows:
+            year = r["year"]
+            if year not in result:
+                result[year] = set()
+            result[year].add(r["xml_url"])
+        return result
 
     def count_papers(self, venue_key: Optional[str] = None) -> int:
         if venue_key:

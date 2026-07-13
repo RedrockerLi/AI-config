@@ -67,14 +67,8 @@ class OpenAlexFetcher(AbstractFetcher):
             filter=f"doi:{doi}",
             per_page=1,
         )
-        try:
-            response = httpx.get(
-                self.SEARCH_URL, params=params, headers=self._headers,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except Exception:
+        data = self._fetch_with_retry(self.SEARCH_URL, params, label=doi)
+        if data is None:
             return None
 
         results = data.get("results", [])
@@ -93,14 +87,8 @@ class OpenAlexFetcher(AbstractFetcher):
             search=query,
             per_page=3,
         )
-        try:
-            response = httpx.get(
-                self.SEARCH_URL, params=params, headers=self._headers,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except Exception:
+        data = self._fetch_with_retry(self.SEARCH_URL, params)
+        if data is None:
             return None
 
         results = data.get("results", [])
@@ -134,6 +122,39 @@ class OpenAlexFetcher(AbstractFetcher):
             return None
 
         return self._extract_abstract(best)
+
+    def _fetch_with_retry(
+        self, url: str, params: dict, label: str = "", max_retries: int = 3
+    ) -> Optional[dict]:
+        """GET + 指数退避重试。404 不重试，其余异常均重试。"""
+        last_error = ""
+        for attempt in range(max_retries):
+            if attempt > 0:
+                wait = 2 ** attempt  # 2s, 4s, 8s
+                tag = f" [{label}]" if label else ""
+                print(
+                    f"  [OpenAlex]{tag} 重试 ({attempt + 1}/{max_retries}), "
+                    f"等待 {wait}s..."
+                )
+                time.sleep(wait)
+
+            try:
+                response = httpx.get(
+                    url, params=params, headers=self._headers,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    return None
+                last_error = str(e)
+            except Exception as e:
+                last_error = str(e)
+
+        tag = f" [{label}]" if label else ""
+        print(f"  [OpenAlex]{tag} 持久错误: {last_error}")
+        return None
 
     def _build_params(self, **kwargs) -> dict:
         """Build query params, adding api_key if available."""

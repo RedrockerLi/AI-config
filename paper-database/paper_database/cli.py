@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -174,120 +175,298 @@ def paper_fetch(ctx, venue_key, year_filter):
         venues = [v]
 
     total_papers = 0
+    skipped_years = 0
 
-    for v in venues:
+    for vi, v in enumerate(venues):
         year_start = year_filter if year_filter else v.year_start
         year_end = year_filter if year_filter else v.year_end
 
-        for year in range(year_start, year_end + 1):
-            console.print(f"  拉取 [cyan]{v.key}[/] {year}...", end=" ")
-            papers = fetcher.fetch_papers_by_venue_year(v, year)
+        # Check which years are potentially missing: either no papers in DB,
+        # or multi-volume year where not all volumes were fetched.
+        # First, discover URLs from index.xml to know what SHOULD exist.
+        # But we can skip index.xml if ALL years have papers AND no year
+        # has missing volumes in fetched_log.
+
+        years_to_check = list(range(year_start, year_end + 1))
+
+        # ── Fast path: all years have papers → check fetched_log ──
+        # If every year has at least some papers, we might still be missing
+        # volumes. But we only know after comparing with index.xml.
+        # Strategy: fetch index.xml only if at least one year has 0 papers.
+        all_have_papers = all(
+            db.count_papers_for_venue_year(v.key, y) > 0
+            for y in years_to_check
+        )
+
+        if all_have_papers and years_to_check:
+            # All years have papers, but multi-volume may be incomplete.
+            # Only check index.xml if there are multi-volume venues
+            # (ASPLOS etc.) — for single-volume venues, count>0 is sufficient.
+            # For now, still do a light check via fetched_log.
+            fetched = db.get_fetched_urls(v.key)
+            fully_complete = True
+            for y in years_to_check:
+                if y not in fetched:
+                    # No fetched_log entries → old data from before this feature
+                    # Trust count>0 for single-volume, but warn for known multi-vol
+                    fully_complete = False
+                    break
+            if fully_complete:
+                for y in years_to_check:
+                    console.print(
+                        f"  [cyan]{v.key}[/] {y}... "
+                        f"[dim]已存在 {db.count_papers_for_venue_year(v.key, y)} 篇，跳过[/]"
+                    )
+                    skipped_years += 1
+                continue
+
+        # Small delay between venues to avoid DBLP rate limits (429)
+        if vi > 0:
+            time.sleep(1.0)
+
+        # ── Discover URLs from index.xml ──
+        year_urls = fetcher.discover_year_urls(v)
+        index_failed = len(year_urls) == 0
+
+        # Get previously fetched URLs for this venue
+        fetched_urls = db.get_fetched_urls(v.key)
+
+        for year in years_to_check:
+            # Determine which URLs are already fetched for this year
+            discovered = set(year_urls.get(year, []))
+            already_fetched = fetched_urls.get(year, set())
+            missing_urls = discovered - already_fetched
+
+            # If index failed and no fetched info, for conferences try legacy
+            if index_failed:
+                existing = db.count_papers_for_venue_year(v.key, year)
+                if existing > 0:
+                    console.print(
+                        f"  [cyan]{v.key}[/] {year}... "
+                        f"[dim]已存在 {existing} 篇，跳过[/]"
+                    )
+                    skipped_years += 1
+                    continue
+                elif v.type == "conference":
+                    # Let fetch_papers_by_venue_year try legacy URL
+                    missing_urls = {"__legacy__"}
+                else:
+                    console.print(
+                        f"  [cyan]{v.key}[/] {year}... "
+                        f"[yellow]DBLP 无数据[/]"
+                    )
+                    continue
+
+            # All volumes already fetched
+            if discovered and not missing_urls:
+                existing = db.count_papers_for_venue_year(v.key, year)
+                console.print(
+                    f"  [cyan]{v.key}[/] {year}... "
+                    f"[dim]已存在 {existing} 篇，跳过[/]"
+                )
+                skipped_years += 1
+                continue
+
+            # No data on DBLP for this year
+            if not discovered and not index_failed:
+                console.print(
+                    f"  [cyan]{v.key}[/] {year}... "
+                    f"[yellow]DBLP 无数据[/]"
+                )
+                continue
+
+            # ── Fetch missing volumes ──
+            # Build URL list: if we have specific missing URLs, pass them;
+            # if it's a legacy fallback, pass None to let the fetcher discover.
+            if missing_urls == {"__legacy__"}:
+                fetch_urls = None  # Fetcher will try legacy URL
+            elif missing_urls:
+                fetch_urls = list(missing_urls)
+            else:
+                fetch_urls = None  # All discovered, fetcher will use index
+
+            n_vols = len(fetch_urls) if fetch_urls else 1
+            vol_info = f" ({n_vols} 卷)" if n_vols > 1 else ""
+            extra = ""
+            if discovered and already_fetched:
+                extra = (
+                    f" [dim](已取 {len(already_fetched)}/{len(discovered)} 卷)[/] "
+                )
+            console.print(
+                f"  拉取 [cyan]{v.key}[/] {year}{vol_info}...{extra}", end=" "
+            )
+            papers, fetched_now = fetcher.fetch_papers_by_venue_year(
+                v, year, urls=fetch_urls
+            )
 
             if papers:
                 db.insert_papers_batch(papers, v.key)
                 console.print(f"[green]{len(papers)} 篇[/]")
                 total_papers += len(papers)
+
+                # Mark each successfully fetched URL
+                for url in fetched_now:
+                    db.mark_url_fetched(v.key, year, url, len(papers))
             else:
                 console.print("[yellow]0 篇[/]")
 
-    console.print(f"\n[green]✓[/] 总计拉取 {total_papers} 篇论文")
+    summary_parts = [f"总计拉取 {total_papers} 篇论文"]
+    if skipped_years > 0:
+        summary_parts.append(f"跳过 {skipped_years} 个已存在的年份")
+    console.print(f"\n[green]✓[/] {', '.join(summary_parts)}")
 
 
 @paper.command("fetch-abstracts")
-@click.option("--limit", "-l", default=0, help="限制获取摘要的数量 (0=全部)")
+@click.option("--limit", "-l", default=0,
+              help="每批获取摘要的数量 (0=默认 10000)")
+@click.option("--stop-after", "--max-total", type=int, default=0,
+              help="最多获取多少篇摘要后停止 (0=不限制)")
 @click.pass_context
-def paper_fetch_abstracts(ctx, limit):
-    """从 Semantic Scholar / OpenAlex 补全摘要."""
+def paper_fetch_abstracts(ctx, limit, stop_after):
+    """从 Semantic Scholar / OpenAlex 补全摘要（自动续跑，直到全部完成）."""
     db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
+    batch_size = limit or 10000
 
-    papers_without = db.get_papers_without_abstract(limit=limit or 10000)
-    if not papers_without:
+    total = db.count_papers()
+    with_abstract = db.count_papers_with_abstract()
+    remaining = total - with_abstract
+
+    if remaining == 0:
         console.print("[green]✓[/] 所有论文已有摘要")
         return
 
-    console.print(f"需要获取摘要: {len(papers_without)} 篇")
-
-    # Build PaperMeta list
-    all_papers = [
-        PaperMeta(
-            title=row["title"],
-            year=row["year"],
-            authors=json.loads(row["authors"]),
-            dblp_key=row["dblp_key"],
-            doi=row.get("doi", "") or "",
-        )
-        for row in papers_without
-    ]
+    estimated_batches = (remaining + batch_size - 1) // batch_size
+    console.print(
+        f"需要获取摘要: {remaining} 篇 "
+        f"(预计 {estimated_batches} 批, 每批 {batch_size} 篇)"
+    )
 
     s2 = None
     oa = OpenAlexFetcher()
 
-    s2_count = 0
-    oa_count = 0
-    failed = 0
+    total_s2 = 0
+    total_oa = 0
+    total_failed = 0
+    prev_remaining = remaining
+    batch_num = 0
 
-    # ── Phase 1: Semantic Scholar (only with API key) ──────────
-    s2_results: dict = {}
-    if os.environ.get("S2_API_KEY"):
-        s2 = SemanticScholarFetcher()
-        doi_count = sum(1 for p in all_papers if p.doi.strip())
-        console.print(
-            f"\n[bold]Phase 1: Semantic Scholar[/] "
-            f"({doi_count} 篇有 DOI → batch, 其余标题搜索)"
-        )
-        s2_results = s2.fetch_abstracts_batch(all_papers)
+    while True:
+        batch_num += 1
 
-        # Write S2 results to DB
-        for p in all_papers:
-            abstract = s2_results.get(p.dblp_key, "")
-            if abstract:
-                db.update_paper_abstract(
-                    p.dblp_key, abstract, "semantic_scholar",
-                    citation_count=p.citation_count,
-                    doi=p.doi,
-                )
-                s2_count += 1
+        papers_without = db.get_papers_without_abstract(limit=batch_size)
+        if not papers_without:
+            break
 
-        console.print(f"  S2 成功: {s2_count} 篇")
-    else:
-        console.print(
-            "[dim]未设置 S2_API_KEY，跳过 Semantic Scholar，直接使用 OpenAlex[/]"
-        )
+        # 应用 --stop-after 上限
+        total_done = total_s2 + total_oa
+        if stop_after > 0 and total_done >= stop_after:
+            break
+        if stop_after > 0 and total_done + len(papers_without) > stop_after:
+            papers_without = papers_without[: stop_after - total_done]
 
-    # ── Phase 2: OpenAlex fallback ─────────────────────────────
-    remaining = [p for p in all_papers if p.dblp_key not in s2_results]
-    if remaining:
-        console.print(
-            f"\n[bold]Phase 2: OpenAlex 兜底[/] ({len(remaining)} 篇)"
-        )
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeRemainingColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task(
-                "OpenAlex 补全摘要", total=len(remaining)
+        if batch_num > 1:
+            console.print(
+                f"\n[bold]--- 批次 {batch_num}/{estimated_batches}，"
+                f"自动续跑... ---[/]"
             )
 
-            for paper in remaining:
-                abstract = oa.fetch_abstract(paper)
+        # Build PaperMeta list
+        all_papers = [
+            PaperMeta(
+                title=row["title"],
+                year=row["year"],
+                authors=json.loads(row["authors"]),
+                dblp_key=row["dblp_key"],
+                doi=row.get("doi", "") or "",
+            )
+            for row in papers_without
+        ]
+
+        batch_s2 = 0
+        batch_oa = 0
+        batch_failed = 0
+
+        # ── Phase 1: Semantic Scholar (only with API key) ──────────
+        s2_results: dict = {}
+        if os.environ.get("S2_API_KEY"):
+            if s2 is None:
+                s2 = SemanticScholarFetcher()
+            doi_count = sum(1 for p in all_papers if p.doi.strip())
+            console.print(
+                f"\n[bold]Phase 1: Semantic Scholar[/] "
+                f"({doi_count} 篇有 DOI → batch, 其余标题搜索)"
+            )
+            s2_results = s2.fetch_abstracts_batch(all_papers)
+
+            # Write S2 results to DB
+            for p in all_papers:
+                abstract = s2_results.get(p.dblp_key, "")
                 if abstract:
                     db.update_paper_abstract(
-                        paper.dblp_key, abstract, "openalex",
-                        citation_count=paper.citation_count,
-                        doi=paper.doi,
+                        p.dblp_key, abstract, "semantic_scholar",
+                        citation_count=p.citation_count,
+                        doi=p.doi,
                     )
-                    oa_count += 1
-                else:
-                    failed += 1
-                progress.update(task, advance=1)
+                    batch_s2 += 1
+
+            console.print(f"  S2 成功: {batch_s2} 篇")
+        else:
+            console.print(
+                "[dim]未设置 S2_API_KEY，跳过 Semantic Scholar，直接使用 OpenAlex[/]"
+            )
+
+        # ── Phase 2: OpenAlex fallback ─────────────────────────────
+        remaining_papers = [p for p in all_papers if p.dblp_key not in s2_results]
+        if remaining_papers:
+            console.print(
+                f"\n[bold]Phase 2: OpenAlex 兜底[/] ({len(remaining_papers)} 篇)"
+            )
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeRemainingColumn(),
+                console=console,
+            ) as progress:
+                task = progress.add_task(
+                    "OpenAlex 补全摘要", total=len(remaining_papers)
+                )
+
+                for paper in remaining_papers:
+                    abstract = oa.fetch_abstract(paper)
+                    if abstract:
+                        db.update_paper_abstract(
+                            paper.dblp_key, abstract, "openalex",
+                            citation_count=paper.citation_count,
+                            doi=paper.doi,
+                        )
+                        batch_oa += 1
+                    else:
+                        batch_failed += 1
+                    progress.update(task, advance=1)
+
+        total_s2 += batch_s2
+        total_oa += batch_oa
+        total_failed += batch_failed
+
+        # 停滞检测：本批 0 获取 + 剩余数未减少 → 无法继续
+        current_remaining = db.count_papers() - db.count_papers_with_abstract()
+        if (
+            batch_num > 1
+            and current_remaining >= prev_remaining
+            and batch_s2 + batch_oa == 0
+        ):
+            console.print(
+                f"[yellow]⚠ 本批未能获取任何摘要 "
+                f"({current_remaining} 篇仍未获取), 停止[/]"
+            )
+            break
+        prev_remaining = current_remaining
 
     console.print(
-        f"\n[green]✓[/] S2: {s2_count} | OpenAlex: {oa_count} | "
-        f"Failed: {failed}"
+        f"\n[green]✓[/] 全部完成! S2: {total_s2} | OpenAlex: {total_oa} | "
+        f"Failed: {total_failed}"
     )
 
 

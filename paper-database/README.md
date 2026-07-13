@@ -13,6 +13,7 @@ python -m paper_database venue init
 
 # 3. 拉取论文 (以 HPCA 2024 为例测试)
 python -m paper_database paper fetch-all --venue hpca --year 2024
+python -m paper_database paper fetch-abstracts # 摘要
 
 # 4. 创建调研
 python -m paper_database survey create --topic scheduling --name "测试调研"
