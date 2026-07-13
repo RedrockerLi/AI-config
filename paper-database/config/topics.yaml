@@ -46,12 +46,30 @@ topics:
       - 调度只是背景介绍、实验环境或已有系统的一部分
 
       =========================
-      边界情况
+      不属于调度 → priority = null
       =========================
 
-      对于边界论文，请优先保证召回率。
-      如果调度是论文的重要组成部分、关键优化技术或主要创新之一，即使论文还涉及缓存、预取、内存管理、运行时、编译器等其他主题，也建议判定为 true。
-      只有在可以明确判断论文与调度无关时，才输出 false。
+      - 调度仅作为已有模块被调用，而非论文创新点
+      - 论文核心贡献是：电路设计、制造工艺、器件、编码压缩、加密安全、ISA设计、功耗建模、可靠性分析、测试验证等，与调度无直接关系
+      - 调度只是背景介绍、实验环境或已有系统的一部分
+
+      =========================
+      优先级分级（P1 / P2 / P3）
+      =========================
+
+      研究兴趣：粗粒度可重构架构（CGRAs）、GPU 等硬件上的调度。
+
+      P1（必须读）— 与研究方向直接相关：
+      CGRA Scheduling / GPU Scheduling / Accelerator Scheduling / Runtime Scheduling（Accelerator）/ Dataflow Scheduling / PIM / Near-Memory Scheduling / Compiler Scheduling（针对 CGRA / GPU / Dataflow）/ PE Mapping + Scheduling / Tensor Accelerator Scheduling
+      → 很可能成为 Related Work。
+
+      P2（建议读）— 经典调度，但平台不同：
+      CPU Instruction Scheduling / OoO Scheduling / Memory Scheduling / DRAM Controller / NoC Scheduling / Multicore Task Scheduling / NUMA Scheduling / OS Runtime Scheduling
+      → 可能借鉴思想，但不是主要方向。
+
+      P3（可选）— 调度存在，但联系较弱：
+      Cloud Scheduling / Cluster Scheduling / Hadoop / Spark / Database Scheduling / Storage Scheduling / SSD Scheduling / Network QoS
+      → 除非特别经典，否则可以不看。
 
       =========================
       输出要求
@@ -60,16 +78,17 @@ topics:
       输出 JSON，不要输出任何解释文字。
 
       {{
-        "is_relevant": true,
+        "priority": "P1",
         "reason": "判断理由（80字以内）",
         "confidence": 0.93,
-        "研究对象": "论文研究对象（英文缩写优先，如GPU、SM、LLC、NoC、DRAM Controller、CGRA等）",
-        "问题/目标": "论文希望解决的调度问题（一句话）",
-        "方法/创新": "论文提出的方法（一句话）",
-        "调度算法": "算法名称；若无正式名称则描述其策略（不要留空）"
+        "research_object": "论文研究对象（英文缩写优先，如GPU、SM、LLC、NoC、DRAM Controller、CGRA等）",
+        "problem_goal": "论文希望解决的问题，或者论文想达成的目标（中文，不要留空）",
+        "method_innovation": "论文提出的方法，或者和其他方法相比的创新（中文，不要留空）",
+        "algorithm": "算法名称+描述其策略（中文，不要留空）"
       }}
 
-      confidence 说明：只有非常确定时才使用0.9以上；无法完全确定时建议0.6~0.8。
+      不属于调度的论文设置 priority 为 null。
+      confidence：非常确定时 0.9+；不确定时 0.6~0.8。
 
     output:
       format: csv
@@ -87,6 +106,9 @@ topics:
         - field: doi
           header: "链接"
           width: 30
+        - field: priority
+          header: "优先级"
+          width: 8
         - field: research_object
           header: "研究对象"
           width: 20

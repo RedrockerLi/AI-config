@@ -118,9 +118,9 @@ class SurveyResultRow:
     doi: str
     abstract: str
     citation_count: int
-    is_relevant: Optional[bool]
-    relevance_reason: str
-    confidence: float
+    priority: str = ""            # "P1" / "P2" / "P3" / ""
+    relevance_reason: str = ""
+    confidence: float = 0.0
     # Structured extraction fields
     research_object: str = ""
     problem_goal: str = ""
@@ -501,33 +501,49 @@ class Database:
         self.conn.commit()
 
     def survey_stats(self, survey_id: int) -> dict:
-        """Return classification progress stats."""
+        """Return classification progress stats with P1/P2/P3 breakdown."""
         total_row = self.conn.execute(
             "SELECT COUNT(*) as cnt FROM survey_result WHERE survey_id = ?",
             (survey_id,),
         ).fetchone()
         classified_row = self.conn.execute(
             """SELECT COUNT(*) as cnt FROM survey_result
-               WHERE survey_id = ? AND is_relevant IS NOT NULL""",
+               WHERE survey_id = ? AND is_relevant IS NOT NULL
+               AND is_relevant != ''""",
             (survey_id,),
         ).fetchone()
-        relevant_row = self.conn.execute(
+        p1_row = self.conn.execute(
             """SELECT COUNT(*) as cnt FROM survey_result
-               WHERE survey_id = ? AND is_relevant = 1""",
+               WHERE survey_id = ? AND is_relevant = 'P1'""",
+            (survey_id,),
+        ).fetchone()
+        p2_row = self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM survey_result
+               WHERE survey_id = ? AND is_relevant = 'P2'""",
+            (survey_id,),
+        ).fetchone()
+        p3_row = self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM survey_result
+               WHERE survey_id = ? AND is_relevant = 'P3'""",
             (survey_id,),
         ).fetchone()
 
         total = total_row["cnt"] if total_row else 0
         classified = classified_row["cnt"] if classified_row else 0
-        relevant = relevant_row["cnt"] if relevant_row else 0
+        p1 = p1_row["cnt"] if p1_row else 0
+        p2 = p2_row["cnt"] if p2_row else 0
+        p3 = p3_row["cnt"] if p3_row else 0
 
         return {
             "survey_id": survey_id,
             "total": total,
             "classified": classified,
             "unclassified": total - classified,
-            "relevant": relevant,
-            "not_relevant": classified - relevant,
+            "p1": p1,
+            "p2": p2,
+            "p3": p3,
+            "relevant": p1 + p2 + p3,
+            "not_relevant": classified - p1 - p2 - p3,
             "progress_pct": round(classified / total * 100, 1) if total > 0 else 0,
         }
 
@@ -551,27 +567,28 @@ class Database:
         return [dict(r) for r in rows]
 
     def mark_result(
-        self, result_id: int, is_relevant: bool,
+        self, result_id: int, is_relevant: str = "",
         reason: str = "", confidence: float = 0.0,
         analysis_json: str = "",
     ):
-        """Mark a single survey_result as classified."""
+        """Mark a single survey_result as classified. is_relevant stores priority ("P1"/"P2"/"P3"/"")."""
         self.conn.execute(
             """UPDATE survey_result
                SET is_relevant = ?, relevance_reason = ?, confidence = ?,
                    analysis_json = ?, classified_at = ?
                WHERE id = ?""",
-            (1 if is_relevant else 0, reason, confidence,
+            (is_relevant, reason, confidence,
              analysis_json,
              datetime.now(timezone.utc).isoformat(), result_id),
         )
         self.conn.commit()
 
     def mark_batch(self, results: list[dict]):
-        """Batch mark survey_results. Each dict: {id, is_relevant, reason, confidence, analysis_json}."""
+        """Batch mark survey_results. Each dict: {id, is_relevant, reason, confidence, analysis_json}.
+        is_relevant stores priority string ("P1"/"P2"/"P3"/"")."""
         now = datetime.now(timezone.utc).isoformat()
         rows = [
-            (1 if r["is_relevant"] else 0,
+            (r.get("is_relevant", ""),
              r.get("reason", ""),
              r.get("confidence", 0.0),
              r.get("analysis_json", ""),
@@ -594,7 +611,7 @@ class Database:
         """Get all classified results for a survey, joined with paper + venue."""
         where = "sr.survey_id = ?"
         if relevant_only:
-            where += " AND sr.is_relevant = 1"
+            where += " AND sr.is_relevant != ''"
 
         rows = self.conn.execute(
             f"""SELECT sr.paper_id, p.title, p.authors, p.year,
@@ -621,6 +638,10 @@ class Database:
                 except json.JSONDecodeError:
                     pass
 
+            priority = (r["is_relevant"] or "").strip()
+            if priority not in ("P1", "P2", "P3"):
+                priority = ""
+
             results.append(SurveyResultRow(
                 paper_id=r["paper_id"],
                 title=r["title"],
@@ -630,12 +651,12 @@ class Database:
                 doi=r["doi"],
                 abstract=r["abstract"],
                 citation_count=r["citation_count"],
-                is_relevant=bool(r["is_relevant"]) if r["is_relevant"] is not None else None,
+                priority=priority,
                 relevance_reason=r["relevance_reason"] or "",
                 confidence=r["confidence"] or 0.0,
-                research_object=analysis.get("研究对象", ""),
-                problem_goal=analysis.get("问题/目标", ""),
-                method_innovation=analysis.get("方法/创新", ""),
-                algorithm=analysis.get("调度算法", ""),
+                research_object=analysis.get("research_object", "") or analysis.get("研究对象", ""),
+                problem_goal=analysis.get("problem_goal", "") or analysis.get("问题/目标", ""),
+                method_innovation=analysis.get("method_innovation", "") or analysis.get("方法/创新", ""),
+                algorithm=analysis.get("algorithm", "") or analysis.get("调度算法", ""),
             ))
         return results

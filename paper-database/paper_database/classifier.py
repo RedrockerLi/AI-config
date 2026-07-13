@@ -23,14 +23,19 @@ from paper_database.fetcher.base import PaperMeta
 
 @dataclass
 class ClassificationResult:
-    is_relevant: bool
-    reason: str
-    confidence: float
-    # Structured extraction fields (populated when is_relevant=True)
+    priority: str = ""             # "P1" / "P2" / "P3" / "" ("" = not relevant)
+    reason: str = ""
+    confidence: float = 0.0
+    # Structured extraction fields
     research_object: str = ""      # 研究对象
     problem_goal: str = ""         # 问题/目标
     method_innovation: str = ""    # 方法/创新
     algorithm: str = ""            # 调度算法
+
+    @property
+    def is_relevant(self) -> bool:
+        """Backward compat: True if any priority is set."""
+        return self.priority in ("P1", "P2", "P3")
 
 
 class DeepSeekClassifier:
@@ -188,14 +193,15 @@ class DeepSeekClassifier:
                         result.algorithm,
                     ]):
                         analysis_json = json.dumps({
-                            "研究对象": result.research_object,
-                            "问题/目标": result.problem_goal,
-                            "方法/创新": result.method_innovation,
-                            "调度算法": result.algorithm,
+                            "priority": result.priority,
+                            "research_object": result.research_object,
+                            "problem_goal": result.problem_goal,
+                            "method_innovation": result.method_innovation,
+                            "algorithm": result.algorithm,
                         }, ensure_ascii=False)
                     db_results.append({
                         "id": row_index[paper.dblp_key]["result_id"],
-                        "is_relevant": result.is_relevant,
+                        "is_relevant": result.priority,  # stores "P1"/"P2"/"P3"/""
                         "reason": result.reason,
                         "confidence": result.confidence,
                         "analysis_json": analysis_json,
@@ -302,7 +308,7 @@ class DeepSeekClassifier:
     def _parse_response(text: str) -> ClassificationResult:
         """Parse JSON response from API."""
         # Try to find JSON object in the text
-        json_match = re.search(r'\{[^{}]*"is_relevant"[^{}]*\}', text, re.DOTALL)
+        json_match = re.search(r'\{[^{}]*"priority"[^{}]*\}', text, re.DOTALL)
         if json_match:
             text = json_match.group(0)
 
@@ -314,25 +320,29 @@ class DeepSeekClassifier:
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
-                # Last resort: keyword matching
-                lower = text.lower()
-                is_rel = (
-                    "true" in lower
-                    and '"is_relevant"' in lower
-                    and not '"is_relevant": false' in lower
-                )
+                # Last resort: check for P1/P2/P3 in raw text
+                priority = ""
+                for p in ("P1", "P2", "P3"):
+                    if p in text.upper():
+                        priority = p
+                        break
                 return ClassificationResult(
-                    is_relevant=is_rel,
+                    priority=priority,
                     reason=f"[JSON parse failed] {text[:200]}",
                     confidence=0.3,
                 )
 
+        priority = str(data.get("priority", "") or "")
+        # Normalize: accept "P1"/"P2"/"P3", reject anything else
+        if priority not in ("P1", "P2", "P3"):
+            priority = ""
+
         return ClassificationResult(
-            is_relevant=bool(data.get("is_relevant", False)),
+            priority=priority,
             reason=str(data.get("reason", "")),
             confidence=float(data.get("confidence", 0.5)),
-            research_object=str(data.get("研究对象", "")),
-            problem_goal=str(data.get("问题/目标", "")),
-            method_innovation=str(data.get("方法/创新", "")),
-            algorithm=str(data.get("调度算法", "")),
+            research_object=str(data.get("research_object", "")),
+            problem_goal=str(data.get("problem_goal", "")),
+            method_innovation=str(data.get("method_innovation", "")),
+            algorithm=str(data.get("algorithm", "")),
         )
