@@ -142,15 +142,17 @@ class Database:
 
     # ── Venue CRUD ───────────────────────────────────────────
 
-    def upsert_venue(self, v: VenueConfig):
-        self.conn.execute(
-            """INSERT OR REPLACE INTO venue (key, name, type, ccf_rank,
+    def upsert_venue(self, v: VenueConfig) -> bool:
+        """Insert a venue if not exists. Returns True if inserted (new), False if skipped (existing)."""
+        cursor = self.conn.execute(
+            """INSERT OR IGNORE INTO venue (key, name, type, ccf_rank,
                dblp_url_prefix, year_start, year_end)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (v.key, v.name, v.type, v.ccf_rank,
              v.dblp_url_prefix, v.year_start, v.year_end),
         )
         self.conn.commit()
+        return cursor.rowcount > 0
 
     def get_venue_id(self, key: str) -> Optional[int]:
         row = self.conn.execute(
@@ -170,15 +172,16 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def count_venues(self) -> int:
-        """Return the number of venues currently in the database."""
-        row = self.conn.execute("SELECT COUNT(*) as cnt FROM venue").fetchone()
-        return row["cnt"] if row else 0
+    def init_venues_from_config(self, venues: list[VenueConfig]) -> tuple[int, int]:
+        """Initialize venue table from config list. Safe to run repeatedly.
 
-    def init_venues_from_config(self, venues: list[VenueConfig]):
-        """Initialize venue table from config list."""
+        Returns (new_count, existing_count).
+        """
+        new = 0
         for v in venues:
-            self.upsert_venue(v)
+            if self.upsert_venue(v):
+                new += 1
+        return new, len(venues) - new
 
     # ── Paper CRUD ───────────────────────────────────────────
 

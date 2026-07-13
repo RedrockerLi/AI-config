@@ -54,11 +54,18 @@ def _resolve_config(config_dir: str = "config"):
     return reload_config(config_dir)
 
 
+# ── Default paths (relative to this file, CWD-independent) ──────
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_CONFIG = str(_PROJECT_ROOT / "config")
+_DEFAULT_DB = str(_PROJECT_ROOT / "papers.db")
+
+
 # ── Main CLI group ──────────────────────────────────────────────
 
 @click.group()
-@click.option("--config-dir", default="config", help="Config directory path")
-@click.option("--db", "db_path", default="papers.db", help="SQLite database path")
+@click.option("--config-dir", default=_DEFAULT_CONFIG, help="Config directory path")
+@click.option("--db", "db_path", default=_DEFAULT_DB, help="SQLite database path")
 @click.pass_context
 def main(ctx, config_dir, db_path):
     """Paper Database — 文献库管理系统.
@@ -79,25 +86,20 @@ def venue():
 
 
 @venue.command("init")
-@click.option("--force", is_flag=True, default=False, help="强制重新初始化（会重置 venue ID，破坏已有论文的 venue 关联）")
 @click.pass_context
-def venue_init(ctx, force):
-    """从 config/venues.yaml 初始化 venue 表."""
+def venue_init(ctx):
+    """从 config/venues.yaml 同步 venue 表（只添加新 venue，不修改已有数据）."""
     config = _resolve_config(ctx.obj["config_dir"])
     db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
 
-    existing = db.count_venues()
-    if existing > 0:
-        if not force:
-            console.print(
-                f"[yellow]⚠[/] 数据库已有 {existing} 个 venue，"
-                f"无需重复初始化。使用 --force 强制覆盖（会破坏论文的 venue 关联！）"
-            )
-            return
-        console.print("[yellow]⚠[/] 强制覆盖已有 venue 数据...")
-
-    db.init_venues_from_config(config.venues)
-    console.print(f"[green]✓[/] 已初始化 {len(config.venues)} 个 venue")
+    new, existing = db.init_venues_from_config(config.venues)
+    if new > 0:
+        console.print(
+            f"[green]✓[/] 新增 {new} 个 venue"
+            + (f"，已有 {existing} 个跳过" if existing > 0 else "")
+        )
+    else:
+        console.print(f"[dim]✓[/] 全部 {existing} 个 venue 已存在，无需添加")
 
 
 @venue.command("list")
