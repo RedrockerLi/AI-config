@@ -10,6 +10,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -20,7 +21,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table as RichTable
 
-from paper_database.classifier import CLIClassifier
+from paper_database.classifier import DeepSeekClassifier
 from paper_database.config import get_config, reload_config, TopicConfig
 from paper_database.db import Database
 from paper_database.exporter import Exporter
@@ -62,7 +63,7 @@ def _resolve_config(config_dir: str = "config"):
 def main(ctx, config_dir, db_path):
     """Paper Database — 文献库管理系统.
 
-    从 DBLP/Semantic Scholar/OpenAlex 拉取论文，用本地 CLI LLM 分类，
+    从 DBLP/Semantic Scholar/OpenAlex 拉取论文，用 DeepSeek API 分类，
     导出 Excel/CSV 结果。
     """
     ctx.ensure_object(dict)
@@ -315,7 +316,7 @@ def survey_create(ctx, topic, name, venue_filter, year_filter):
     survey_id = db.create_survey(
         topic_cfg,
         name=name,
-        cli_tool=config.classifier.tool,
+        cli_tool=config.classifier.model,
         venue_filter=vf,
         year_filter=yf,
     )
@@ -336,7 +337,7 @@ def survey_list(ctx):
     table.add_column("ID")
     table.add_column("Name")
     table.add_column("Topic")
-    table.add_column("CLI Tool")
+    table.add_column("Model")
     table.add_column("Status")
     table.add_column("Created")
 
@@ -397,12 +398,12 @@ def survey_reset(ctx, survey_id):
 
 @survey.command("classify")
 @click.option("--survey-id", "-s", type=int, required=True)
-@click.option("--dry-run", is_flag=True, default=False, help="只打印 prompt，不实际调 CLI")
+@click.option("--dry-run", is_flag=True, default=False, help="只打印 prompt，不实际调 API")
 @click.option("--limit", "-l", type=int, default=None, help="最大分类数量")
 @click.option("--start", type=int, default=1, help="从第 N 篇开始 (断点续传)")
 @click.pass_context
 def survey_classify(ctx, survey_id, dry_run, limit, start):
-    """运行分类 (subprocess 调本地 CLI LLM)."""
+    """运行分类 (DeepSeek API 并发)."""
     config = _resolve_config(ctx.obj["config_dir"])
     db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
 
@@ -416,13 +417,17 @@ def survey_classify(ctx, survey_id, dry_run, limit, start):
         console.print(f"[red]✗[/] Topic '{s['topic_key']}' 配置不存在")
         sys.exit(1)
 
-    classifier = CLIClassifier(config.classifier)
+    classifier = DeepSeekClassifier(config.classifier)
 
     if dry_run:
-        console.print("[yellow]DRY RUN 模式 — 只打印 prompt，不调 CLI[/]\n")
+        console.print("[yellow]DRY RUN 模式 — 只打印 prompt，不调 API[/]\n")
 
     stats = db.survey_stats(survey_id)
     console.print(f"Survey #{survey_id}: {stats['unclassified']} 篇待分类")
+    console.print(
+        f"[dim]Model: {config.classifier.model}, "
+        f"Concurrency: {config.classifier.max_concurrency}[/]"
+    )
 
     def progress_callback(done, _total, title, result):
         if result.is_relevant:
@@ -432,13 +437,13 @@ def survey_classify(ctx, survey_id, dry_run, limit, start):
             status = "[dim]✗不相关[/]"
         console.print(f"  [{done}] {status} {title[:70]}...")
 
-    classifier.run_survey(
+    asyncio.run(classifier.run_survey(
         db, survey_id, topic_cfg,
         dry_run=dry_run,
         limit=limit,
         start=start,
         progress_callback=progress_callback,
-    )
+    ))
 
     # Show final stats
     final_stats = db.survey_stats(survey_id)
