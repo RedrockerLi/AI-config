@@ -170,6 +170,11 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def count_venues(self) -> int:
+        """Return the number of venues currently in the database."""
+        row = self.conn.execute("SELECT COUNT(*) as cnt FROM venue").fetchone()
+        return row["cnt"] if row else 0
+
     def init_venues_from_config(self, venues: list[VenueConfig]):
         """Initialize venue table from config list."""
         for v in venues:

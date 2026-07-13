@@ -79,11 +79,22 @@ def venue():
 
 
 @venue.command("init")
+@click.option("--force", is_flag=True, default=False, help="强制重新初始化（会重置 venue ID，破坏已有论文的 venue 关联）")
 @click.pass_context
-def venue_init(ctx):
+def venue_init(ctx, force):
     """从 config/venues.yaml 初始化 venue 表."""
     config = _resolve_config(ctx.obj["config_dir"])
     db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
+
+    existing = db.count_venues()
+    if existing > 0:
+        if not force:
+            console.print(
+                f"[yellow]⚠[/] 数据库已有 {existing} 个 venue，"
+                f"无需重复初始化。使用 --force 强制覆盖（会破坏论文的 venue 关联！）"
+            )
+            return
+        console.print("[yellow]⚠[/] 强制覆盖已有 venue 数据...")
 
     db.init_venues_from_config(config.venues)
     console.print(f"[green]✓[/] 已初始化 {len(config.venues)} 个 venue")
