@@ -1,0 +1,109 @@
+# 调研主题配置 — 定义研究主题和输出格式
+#
+# 可以添加多个 topic，每个 topic 的 key 作为 CLI --topic 参数
+
+topics:
+  - key: scheduling
+    name: "调度相关论文调研"
+    description: >
+      包含指令调度、任务/作业调度、资源调度、网络调度、
+      内存存调度、GPU/加速器调度、实时调度、数据流调度等所有调度子领域。
+      判断标准：论文的主要贡献是否涉及调度方法、调度策略、调度优化或调度分析。
+    keywords:
+      - scheduling
+      - scheduler
+      - resource allocation
+      - task mapping
+      - job scheduling
+      - instruction scheduling
+      - warp scheduling
+      - thread scheduling
+      - dataflow scheduling
+      - real-time scheduling
+      - task scheduling
+      - request scheduling
+      - packet scheduling
+      - memory scheduling
+      - cache scheduling
+      - offloading scheduling
+      - orchestration
+      - dispatching
+      - load balancing
+
+    output:
+      format: csv
+      sort_by: ["year", "venue_name"]
+      columns:
+        - field: title
+          header: "论文标题"
+          width: 60
+        - field: authors
+          header: "作者"
+          width: 30
+          transform: "join_comma"
+        - field: year
+          header: "年份"
+          width: 8
+        - field: venue_name
+          header: "会议/期刊"
+          width: 18
+        - field: doi
+          header: "DOI"
+          width: 30
+        - field: abstract
+          header: "摘要"
+          width: 80
+        - field: is_relevant
+          header: "是否调度相关"
+          width: 12
+          transform: "bool_to_yes_no"
+        - field: relevance_reason
+          header: "判断理由"
+          width: 50
+        - field: confidence
+          header: "置信度"
+          width: 10
+          transform: "percent"
+        - field: citation_count
+          header: "引用数"
+          width: 10
+
+  # ── 示例: 添加更多主题 ──────────────────────────────────────
+  # - key: power
+  #   name: "功耗相关论文调研"
+  #   description: >
+  #     包含功耗建模、低功耗设计、功耗管理、热管理等。
+  #   keywords:
+  #     - power
+  #     - energy
+  #     - low-power
+  #     - power management
+  #     - thermal
+  #   output:
+  #     format: xlsx
+  #     sort_by: ["year", "venue_name"]
+  #     columns:
+  #       - field: title
+  #         header: "论文标题"
+  #         width: 60
+  #       - field: authors
+  #         header: "作者"
+  #         width: 30
+  #         transform: "join_comma"
+  #       - field: year
+  #         header: "年份"
+  #         width: 8
+  #       - field: venue_name
+  #         header: "会议/期刊"
+  #         width: 18
+  #       - field: is_relevant
+  #         header: "是否功耗相关"
+  #         width: 12
+  #         transform: "bool_to_yes_no"
+  #       - field: relevance_reason
+  #         header: "判断理由"
+  #         width: 50
+  #       - field: confidence
+  #         header: "置信度"
+  #         width: 10
+  #         transform: "percent"

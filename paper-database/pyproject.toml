@@ -1,0 +1,20 @@
+[project]
+name = "paper-database"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8",
+    "rich>=13",
+    "pyyaml>=6",
+    "httpx>=0.25",
+]
+
+[project.scripts]
+paper-database = "paper_database.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["paper_database*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

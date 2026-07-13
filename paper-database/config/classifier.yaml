@@ -1,0 +1,42 @@
+# 分类器配置 — 本地 CLI LLM 工具
+#
+# 切换工具: 修改 tool + cli_args
+#   claude → ollama:  tool: ollama, cli_args: ["run", "llama3", "{prompt}"]
+#   claude → tgpt:    tool: tgpt,   cli_args: ["{prompt}"]
+
+classifier:
+  tool: claude
+
+  prompt_template: |
+    你是计算机体系结构领域的论文分类专家。
+
+    判断以下论文是否与「{topic_name}」相关。
+
+    研究主题描述: {topic_description}
+    关键词: {topic_keywords}
+
+    论文标题: {title}
+    论文摘要: {abstract}
+
+    请严格输出 JSON（不要 markdown 代码块包裹，直接输出裸 JSON）:
+    {{"is_relevant": true, "reason": "一句话中文理由", "confidence": 0.95}}
+
+    判断标准:
+    - 标题或摘要直接出现主题关键词，论文核心贡献即该主题 → is_relevant=true, confidence>=0.9
+    - 该主题是论文的主要研究内容或重要组成部分 → is_relevant=true, confidence 0.7-0.9
+    - 论文涉及该主题但不是核心贡献 → is_relevant=true, confidence 0.5-0.7
+    - 仅在背景、相关工作或未来工作中提及 → is_relevant=false
+    - 完全无关 → is_relevant=false
+
+  cli_args:
+    - "-p"
+    - "{prompt}"
+    - "--output-format"
+    - "json"
+    - "--max-tokens"
+    - "500"
+
+  delay_seconds: 1.0
+  timeout: 60
+  max_retries: 3
+  strip_markdown_fence: true

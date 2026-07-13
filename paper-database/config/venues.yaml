@@ -1,0 +1,179 @@
+# Venue 配置文件 — 定义需要检索的会议和期刊
+#
+# dblp_url_prefix: DBLP XML 导出的 URL 路径
+#   会议: conf/{abbrev}  →  https://dblp.org/db/conf/{abbrev}/{abbrev}{year}.xml
+#   期刊: journals/{abbrev} → https://dblp.org/db/journals/{abbrev}/{abbrev}.xml
+#   在 https://dblp.org 搜索 venue 确认正确的路径
+
+venues:
+  # ════════════════ CCF-A 会议 (近10年: 2016-2026) ════════════════
+  - key: hpca
+    name: "HPCA"
+    type: conference
+    ccf_rank: A
+    dblp_url_prefix: "conf/hpca"
+    year_start: 2016
+    year_end: 2026
+
+  - key: micro
+    name: "MICRO"
+    type: conference
+    ccf_rank: A
+    dblp_url_prefix: "conf/micro"
+    year_start: 2016
+    year_end: 2026
+
+  - key: isca
+    name: "ISCA"
+    type: conference
+    ccf_rank: A
+    dblp_url_prefix: "conf/isca"
+    year_start: 2016
+    year_end: 2026
+
+  - key: asplos
+    name: "ASPLOS"
+    type: conference
+    ccf_rank: A
+    dblp_url_prefix: "conf/asplos"
+    year_start: 2016
+    year_end: 2026
+
+  # ════════════════ CCF-A 期刊 (近10年: 2016-2026) ════════════════
+  - key: tc
+    name: "IEEE Transactions on Computers"
+    type: journal
+    ccf_rank: A
+    dblp_url_prefix: "journals/tc"
+    year_start: 2016
+    year_end: 2026
+
+  - key: tpds
+    name: "IEEE Transactions on Parallel and Distributed Systems"
+    type: journal
+    ccf_rank: A
+    dblp_url_prefix: "journals/tpds"
+    year_start: 2016
+    year_end: 2026
+
+  - key: tcad
+    name: "IEEE Transactions on Computer-Aided Design"
+    type: journal
+    ccf_rank: A
+    dblp_url_prefix: "journals/tcad"
+    year_start: 2016
+    year_end: 2026
+
+  - key: taco
+    name: "ACM Transactions on Architecture and Code Optimization"
+    type: journal
+    ccf_rank: A
+    dblp_url_prefix: "journals/taco"
+    year_start: 2016
+    year_end: 2026
+
+  # ════════════════ CCF-B 会议 (近5年: 2021-2026) ════════════════
+  - key: dac
+    name: "DAC"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/dac"
+    year_start: 2021
+    year_end: 2026
+
+  - key: iccad
+    name: "ICCAD"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/iccad"
+    year_start: 2021
+    year_end: 2026
+
+  - key: date
+    name: "DATE"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/date"
+    year_start: 2021
+    year_end: 2026
+
+  - key: codes-isss
+    name: "CODES+ISSS"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/codesisss"
+    year_start: 2021
+    year_end: 2026
+
+  - key: emsoft
+    name: "EMSOFT"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/emsoft"
+    year_start: 2021
+    year_end: 2026
+
+  - key: cases
+    name: "CASES"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/cases"
+    year_start: 2021
+    year_end: 2026
+
+  - key: fccm
+    name: "FCCM"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/fccm"
+    year_start: 2021
+    year_end: 2026
+
+  - key: fpl
+    name: "FPL"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/fpl"
+    year_start: 2021
+    year_end: 2026
+
+  - key: fpt
+    name: "FPT"
+    type: conference
+    ccf_rank: B
+    dblp_url_prefix: "conf/fpt"
+    year_start: 2021
+    year_end: 2026
+
+  # ════════════════ CCF-B 期刊 (近5年: 2021-2026) ════════════════
+  - key: todaes
+    name: "ACM Transactions on Design Automation of Electronic Systems"
+    type: journal
+    ccf_rank: B
+    dblp_url_prefix: "journals/todaes"
+    year_start: 2021
+    year_end: 2026
+
+  - key: jsa
+    name: "Journal of Systems Architecture"
+    type: journal
+    ccf_rank: B
+    dblp_url_prefix: "journals/jsa"
+    year_start: 2021
+    year_end: 2026
+
+  - key: parco
+    name: "Parallel Computing"
+    type: journal
+    ccf_rank: B
+    dblp_url_prefix: "journals/pc"
+    year_start: 2021
+    year_end: 2026
+
+  - key: jetc
+    name: "ACM Journal on Emerging Technologies in Computing Systems"
+    type: journal
+    ccf_rank: B
+    dblp_url_prefix: "journals/jetc"
+    year_start: 2021
+    year_end: 2026
