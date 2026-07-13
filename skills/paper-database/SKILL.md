@@ -61,6 +61,8 @@ version: 0.1.0
 
 ## 重要提醒
 
+- **绝对不要直接操作数据库**：所有操作必须通过 `python -m paper_database` CLI 命令完成，**禁止**使用 `sqlite3` 或任何 SQL 命令直接访问 `papers.db`
+- **绝对不要动论文原始数据**：`paper fetch` 和 `paper fetch-abstracts` 使用 INSERT OR IGNORE，不会覆盖已有数据。永远不要手动 DELETE/UPDATE `paper` 或 `venue` 表
 - 数据来源：DBLP (论文列表) → Semantic Scholar (摘要优先) → OpenAlex (备用)
 - Semantic Scholar API Key 可加速摘要获取: `export S2_API_KEY="your-key"` (100 req/s vs 1 req/s)
 - `fetch-all` 是 `fetch` + `fetch-abstracts` 的组合操作，适合首次建库

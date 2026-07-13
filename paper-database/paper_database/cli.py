@@ -384,6 +384,17 @@ def survey_delete(ctx, survey_id):
     console.print(f"[green]✓[/] 已删除 Survey #{survey_id}")
 
 
+@survey.command("reset")
+@click.option("--survey-id", "-s", type=int, required=True)
+@click.confirmation_option(prompt="确认清空此调研的所有分类结果?")
+@click.pass_context
+def survey_reset(ctx, survey_id):
+    """清空调研的分类结果，保留调研和论文数据."""
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
+    db.reset_survey(survey_id)
+    console.print(f"[green]✓[/] 已清空 Survey #{survey_id} 的分类结果")
+
+
 @survey.command("classify")
 @click.option("--survey-id", "-s", type=int, required=True)
 @click.option("--dry-run", is_flag=True, default=False, help="只打印 prompt，不实际调 CLI")

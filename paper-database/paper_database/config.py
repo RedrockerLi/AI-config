@@ -86,22 +86,30 @@ class TopicConfig:
 
 @dataclass
 class ClassifierConfig:
-    tool: str = "claude"
+    provider: str = "deepseek"
+    api_base_url: str = "https://api.deepseek.com"
+    model: str = "deepseek-chat"
     prompt_template: str = ""
-    cli_args: list[str] = field(default_factory=list)
-    delay_seconds: float = 1.0
-    timeout: int = 30
+    max_tokens: int = 500
+    temperature: float = 0.0
+    enable_thinking: bool = False
+    max_concurrency: int = 32
+    timeout: int = 60
     max_retries: int = 3
     strip_markdown_fence: bool = True
 
     @classmethod
     def from_dict(cls, d: dict) -> "ClassifierConfig":
         return cls(
-            tool=d.get("tool", "claude"),
+            provider=d.get("provider", "deepseek"),
+            api_base_url=d.get("api_base_url", "https://api.deepseek.com"),
+            model=d.get("model", "deepseek-chat"),
             prompt_template=d.get("prompt_template", ""),
-            cli_args=d.get("cli_args", []),
-            delay_seconds=d.get("delay_seconds", 1.0),
-            timeout=d.get("timeout", 30),
+            max_tokens=d.get("max_tokens", 500),
+            temperature=d.get("temperature", 0.0),
+            enable_thinking=d.get("enable_thinking", False),
+            max_concurrency=d.get("max_concurrency", 32),
+            timeout=d.get("timeout", 60),
             max_retries=d.get("max_retries", 3),
             strip_markdown_fence=d.get("strip_markdown_fence", True),
         )

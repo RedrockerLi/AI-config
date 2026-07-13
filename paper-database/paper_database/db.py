@@ -353,6 +353,17 @@ class Database:
         self.conn.execute("DELETE FROM survey WHERE id = ?", (survey_id,))
         self.conn.commit()
 
+    def reset_survey(self, survey_id: int):
+        """Clear classification results but keep the survey and paper data."""
+        self.conn.execute(
+            """UPDATE survey_result
+               SET is_relevant = NULL, relevance_reason = '', confidence = 0.0,
+                   analysis_json = '', classified_at = NULL
+               WHERE survey_id = ?""",
+            (survey_id,),
+        )
+        self.conn.commit()
+
     def survey_stats(self, survey_id: int) -> dict:
         """Return classification progress stats."""
         total_row = self.conn.execute(

@@ -28,6 +28,7 @@ version: 0.1.0
 | 从第 100 篇续传 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --start 100` |
 | 终端预览结果 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <id> --relevant-only` |
 | 导出 CSV | `cd $PAPER_DATABASE_HOME && python -m paper_database survey export --survey-id <id> [--relevant-only]` |
+| 清空分类结果 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey reset --survey-id <id>` |
 | 删除调研 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey delete --survey-id <id>` |
 
 ## 典型对话流程
@@ -68,8 +69,18 @@ version: 0.1.0
 1. `cd $PAPER_DATABASE_HOME && python -m paper_database survey list`
 2. `cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <id> --relevant-only --limit 20`
 
+### 场景5: 重新调研
+用户: "清空上次分类结果，调整 prompt 后重新跑"
+
+1. `cd $PAPER_DATABASE_HOME && python -m paper_database survey reset --survey-id <id>`
+   - 保留论文数据，只清空分类结果
+2. 提醒用户先 dry-run 检查新 prompt
+3. `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id>`
+
 ## 重要提醒
 
+- **绝对不要直接操作数据库**：所有操作必须通过 `python -m paper_database` CLI 命令完成，**禁止**使用 `sqlite3` 或任何 SQL 命令直接访问 `papers.db`
+- **绝对不要动论文原始数据**：`survey reset` 只清空分类结果，保留论文元数据和摘要。永远不要 DELETE/UPDATE `paper` 或 `venue` 表
 - 分类是逐篇 subprocess 调 `claude` CLI，每篇约 1-2 秒
 - 大批量分类建议在终端直接跑 `survey classify`（不经过 Skill 对话，避免 token 开销）
 - `--start N` 用于断点续传，N 是从第几篇开始（从1开始）

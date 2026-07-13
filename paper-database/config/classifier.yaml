@@ -1,11 +1,32 @@
-# 分类器配置 — 本地 CLI LLM 工具
+# 分类器配置 — DeepSeek API
 #
-# 切换工具: 修改 tool + cli_args
-#   claude → ollama:  tool: ollama, cli_args: ["run", "llama3", "{prompt}"]
-#   claude → tgpt:    tool: tgpt,   cli_args: ["{prompt}"]
+# 模型选择:
+#   deepseek-chat      — 通用对话模型 (速度快，成本低)
+#   deepseek-reasoner  — 推理模型 (支持 thinking mode，适合复杂判断)
+#
+# enable_thinking: true 时 deepseek-reasoner 输出思维链推理内容
+# 思考模式文档: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
 
 classifier:
-  tool: claude
+  # API provider
+  provider: deepseek
+
+  # DeepSeek API settings
+  api_base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"              # deepseek-chat | deepseek-reasoner
+
+  # Generation parameters
+  max_tokens: 500
+  temperature: 0.0
+  enable_thinking: false              # 仅 deepseek-reasoner 支持
+
+  # Concurrency — 并发分类数量
+  max_concurrency: 32
+
+  # Retry / resilience
+  timeout: 60
+  max_retries: 3
+  strip_markdown_fence: true
 
   prompt_template: |
     你是计算机体系结构领域的论文分析专家。
@@ -22,6 +43,8 @@ classifier:
     严格输出 JSON（不要 markdown 代码块包裹）:
     {{
       "is_relevant": true,
+      "reason": "相关性判断依据（中文，50字以内）",
+      "confidence": 0.9,
       "研究对象": "论文研究的硬件/系统对象（如GPU、DRAM、NoC等，可用英文缩写）。不相关则空字符串",
       "问题/目标": "论文要解决的具体问题或研究目标（中文一句话）。不相关则空字符串",
       "方法/创新": "论文提出的方法或创新点（中文一句话）。不相关则空字符串",
@@ -34,16 +57,3 @@ classifier:
     - 论文涉及该主题但不是核心贡献 → is_relevant=true
     - 仅在背景、相关工作或未来工作中提及 → is_relevant=false，所有提取字段为空字符串
     - 完全无关 → is_relevant=false，所有提取字段为空字符串
-
-  cli_args:
-    - "-p"
-    - "{prompt}"
-    - "--output-format"
-    - "json"
-    - "--max-tokens"
-    - "500"
-
-  delay_seconds: 1.0
-  timeout: 60
-  max_retries: 3
-  strip_markdown_fence: true
