@@ -429,9 +429,9 @@ def survey_stats(ctx, survey_id):
     console.print(f"  总论文数: {stats['total']}")
     console.print(f"  已分类: {stats['classified']} ({stats['progress_pct']}%)")
     console.print(f"  未分类: {stats['unclassified']}")
-    console.print(f"  [green]P1 (必须读): {stats['p1']}[/]")
-    console.print(f"  [yellow]P2 (建议读): {stats['p2']}[/]")
-    console.print(f"  [dim]P3 (可选): {stats['p3']}[/]")
+    console.print(f"  [green]S (Strong Match): {stats['s']}[/]")
+    console.print(f"  [yellow]A (Architecture Scheduling): {stats['a']}[/]")
+    console.print(f"  [dim]B (General Scheduling): {stats['b']}[/]")
 
 
 @survey.command("delete")
@@ -496,12 +496,12 @@ def survey_classify(ctx, survey_id, dry_run, limit, start, no_export):
 
     def progress_callback(done, _total, title, result):
         algo = f" [{result.algorithm}]" if result.algorithm else ""
-        if result.priority == "P1":
-            status = f"[green]P1{algo}[/]"
-        elif result.priority == "P2":
-            status = f"[yellow]P2{algo}[/]"
-        elif result.priority == "P3":
-            status = f"[dim]P3[/]"
+        if result.priority == "S":
+            status = f"[green]S{algo}[/]"
+        elif result.priority == "A":
+            status = f"[yellow]A{algo}[/]"
+        elif result.priority == "B":
+            status = f"[dim]B[/]"
         else:
             status = "[dim]✗[/]"
         console.print(f"  [{done}] {status} {title[:70]}...")
@@ -517,9 +517,9 @@ def survey_classify(ctx, survey_id, dry_run, limit, start, no_export):
     # Show final stats
     final_stats = survey_db.survey_stats(survey_id)
     console.print(f"\n[green]✓[/] 完成! "
-                  f"P1: {final_stats['p1']} | "
-                  f"P2: {final_stats['p2']} | "
-                  f"P3: {final_stats['p3']} / "
+                  f"S: {final_stats['s']} | "
+                  f"A: {final_stats['a']} | "
+                  f"B: {final_stats['b']} / "
                   f"已分类: {final_stats['classified']}")
 
     # Auto-export CSV (unless --no-export or dry-run)

@@ -54,21 +54,42 @@ topics:
       - 调度只是背景介绍、实验环境或已有系统的一部分
 
       =========================
-      优先级分级（P1 / P2 / P3）
+      优先级分级（S / A / B）
       =========================
 
-      研究兴趣：粗粒度可重构架构（CGRAs）、GPU 等硬件上的调度。
+      研究兴趣：粗粒度可重构架构（CGRAs）、数据流架构、空间架构上的调度。
 
-      P1（必须读）— 与研究方向直接相关：
-      CGRA Scheduling / GPU Scheduling / Accelerator Scheduling / Runtime Scheduling（Accelerator）/ Dataflow Scheduling / PIM / Near-Memory Scheduling / Compiler Scheduling（针对 CGRA / GPU / Dataflow）/ PE Mapping + Scheduling / Tensor Accelerator Scheduling
-      → 很可能成为 Related Work。
+      S（Strong Match）— 与研究方向高度相关，必须精读：
+      - CGRA（Coarse-Grained Reconfigurable Architecture）
+      - Dataflow Architecture
+      - Spatial Architecture
+      - Mapping + Scheduling
+      - Operation Scheduling
+      - PE Scheduling
+      - Runtime Scheduling for CGRA/Dataflow
+      → 直接 Related Work，必须深入分析。
 
-      P2（建议读）— 经典调度，但平台不同：
-      CPU Instruction Scheduling / OoO Scheduling / Memory Scheduling / DRAM Controller / NoC Scheduling / Multicore Task Scheduling / NUMA Scheduling / OS Runtime Scheduling
-      → 可能借鉴思想，但不是主要方向。
+      A（Architecture Scheduling）— 与体系结构调度相关，值得阅读：
+      - GPU
+      - Accelerator
+      - PIM / Near-Memory Computing
+      - Memory Scheduling
+      - NoC Scheduling
+      - Instruction Scheduling
+      - Multicore Scheduling
+      - Compiler Scheduling（Architecture-Oriented）
+      → 可能借鉴思想，与研究方向有交叉。
 
-      P3（可选）— 调度存在，但联系较弱：
-      Cloud Scheduling / Cluster Scheduling / Hadoop / Spark / Database Scheduling / Storage Scheduling / SSD Scheduling / Network QoS
+      B（General Scheduling）— 调度相关但与体系结构联系较弱：
+      - Operating System
+      - Cloud Computing
+      - Distributed Systems
+      - Database
+      - Storage
+      - Network Services
+      - Workflow
+      - Real-time Systems
+      - 其他与体系结构联系较弱的调度研究
       → 除非特别经典，否则可以不看。
 
       =========================
@@ -78,7 +99,7 @@ topics:
       输出 JSON，不要输出任何解释文字。
 
       {{
-        "priority": "P1",
+        "priority": "S",
         "reason": "判断理由（80字以内）",
         "confidence": 0.93,
         "research_object": "论文研究对象（英文缩写优先，如GPU、SM、LLC、NoC、DRAM Controller、CGRA等）",

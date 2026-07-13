@@ -23,7 +23,7 @@ from paper_database.fetcher.base import PaperMeta
 
 @dataclass
 class ClassificationResult:
-    priority: str = ""             # "P1" / "P2" / "P3" / "" ("" = not relevant)
+    priority: str = ""             # "S" / "A" / "B" / "" ("" = not relevant)
     reason: str = ""
     confidence: float = 0.0
     # Structured extraction fields
@@ -35,7 +35,7 @@ class ClassificationResult:
     @property
     def is_relevant(self) -> bool:
         """Backward compat: True if any priority is set."""
-        return self.priority in ("P1", "P2", "P3")
+        return self.priority in ("S", "A", "B")
 
 
 class DeepSeekClassifier:
@@ -201,7 +201,7 @@ class DeepSeekClassifier:
                         }, ensure_ascii=False)
                     db_results.append({
                         "id": row_index[paper.dblp_key]["result_id"],
-                        "is_relevant": result.priority,  # stores "P1"/"P2"/"P3"/""
+                        "is_relevant": result.priority,  # stores "S"/"A"/"B"/""
                         "reason": result.reason,
                         "confidence": result.confidence,
                         "analysis_json": analysis_json,
@@ -320,9 +320,9 @@ class DeepSeekClassifier:
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
-                # Last resort: check for P1/P2/P3 in raw text
+                # Last resort: check for S/A/B in raw text
                 priority = ""
-                for p in ("P1", "P2", "P3"):
+                for p in ("S", "A", "B"):
                     if p in text.upper():
                         priority = p
                         break
@@ -333,8 +333,8 @@ class DeepSeekClassifier:
                 )
 
         priority = str(data.get("priority", "") or "")
-        # Normalize: accept "P1"/"P2"/"P3", reject anything else
-        if priority not in ("P1", "P2", "P3"):
+        # Normalize: accept "S"/"A"/"B", reject anything else
+        if priority not in ("S", "A", "B"):
             priority = ""
 
         return ClassificationResult(
