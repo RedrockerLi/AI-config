@@ -313,8 +313,10 @@ def paper_fetch(ctx, venue_key, year_filter):
               help="每批获取摘要的数量 (0=默认 10000)")
 @click.option("--stop-after", "--max-total", type=int, default=0,
               help="最多获取多少篇摘要后停止 (0=不限制)")
+@click.option("--doi-only", is_flag=True, default=False,
+              help="仅批量 DOI 查询 (10 credits/50 篇)，跳过昂贵的标题搜索")
 @click.pass_context
-def paper_fetch_abstracts(ctx, limit, stop_after):
+def paper_fetch_abstracts(ctx, limit, stop_after, doi_only):
     """从 Semantic Scholar / OpenAlex 补全摘要（自动续跑，直到全部完成）."""
     db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
     batch_size = limit or 10000
@@ -417,19 +419,9 @@ def paper_fetch_abstracts(ctx, limit, stop_after):
                 f"{len(remaining_papers) - doi_count} 篇标题搜索)"
             )
 
-            oa_results = oa.fetch_abstracts_batch(remaining_papers)
+            oa_results = oa.fetch_abstracts_batch(remaining_papers, db=db, doi_only=doi_only)
 
-            # Write results to DB
-            paper_map = {p.dblp_key: p for p in remaining_papers}
-            for dblp_key, abstract in oa_results.items():
-                paper = paper_map.get(dblp_key)
-                db.update_paper_abstract(
-                    dblp_key, abstract, "openalex",
-                    citation_count=paper.citation_count if paper else 0,
-                    doi=paper.doi if paper else "",
-                )
-                batch_oa += 1
-
+            batch_oa += len(oa_results)
             batch_failed = len(remaining_papers) - len(oa_results)
             console.print(
                 f"  OpenAlex 成功: {batch_oa} 篇"

@@ -236,7 +236,9 @@ class DeepSeekClassifier:
             loop = asyncio.get_running_loop()
             fetch_task = loop.run_in_executor(
                 None,
-                lambda: abstract_fetcher.fetch_abstracts_batch(missing),
+                lambda: abstract_fetcher.fetch_abstracts_batch(
+                    missing, db=db, doi_only=True
+                ),
             )
 
         # ── Classify ready papers (overlaps with fetching) ────

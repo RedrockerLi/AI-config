@@ -81,7 +81,7 @@ class OpenAlexFetcher(AbstractFetcher):
         return self._search_by_title(paper.title)
 
     def fetch_abstracts_batch(
-        self, papers: list[PaperMeta]
+        self, papers: list[PaperMeta], db=None, doi_only: bool = False
     ) -> dict[str, str]:
         """Fetch abstracts for multiple papers — DOI batch + title fallback.
 
@@ -89,10 +89,23 @@ class OpenAlexFetcher(AbstractFetcher):
         (up to 50 DOIs per request, 10 credits per batch). Papers without
         DOIs, plus batch misses, fall back to individual title search.
 
+        If ``db`` is provided, abstracts are written to the database
+        **immediately** as each batch completes (survives Ctrl+C).
+
         Returns:
             dict mapping dblp_key -> abstract.
         """
         results: dict[str, str] = {}
+
+        def _save(paper, abstract):
+            """Write to DB immediately if available, else accumulate."""
+            if db is not None:
+                db.update_paper_abstract(
+                    paper.dblp_key, abstract, "openalex",
+                    citation_count=paper.citation_count,
+                    doi=paper.doi,
+                )
+            results[paper.dblp_key] = abstract
 
         # ── Phase 1: Split by DOI availability ──────────────────
         papers_with_doi: list[PaperMeta] = []
@@ -109,15 +122,18 @@ class OpenAlexFetcher(AbstractFetcher):
             doi_to_paper: dict[str, PaperMeta] = {}
             for p in papers_with_doi:
                 doi = p.doi.strip()
-                # Normalize: strip "https://doi.org/" prefix if present
+                # Normalize: strip prefix + lowercase (DOIs are case-insensitive)
                 if doi.startswith("https://doi.org/"):
                     doi = doi[len("https://doi.org/"):]
+                doi = doi.lower()
                 doi_to_paper[doi] = p
 
             batch_results = self._fetch_batch_by_dois(
                 list(doi_to_paper.keys())
             )
 
+            # Count abstracts found
+            saved = 0
             matched_dois: set[str] = set()
             for doi, info in batch_results.items():
                 paper = doi_to_paper.get(doi)
@@ -125,19 +141,49 @@ class OpenAlexFetcher(AbstractFetcher):
                     continue
                 abstract = (info.get("abstract") or "").strip()
                 if abstract:
-                    results[paper.dblp_key] = abstract
+                    _save(paper, abstract)
+                    saved += 1
                     matched_dois.add(doi)
 
+            if batch_results:
+                print(
+                    f"  [OpenAlex] 批量完成: {len(batch_results)}/{len(doi_to_paper)} "
+                    f"DOI 命中, 已保存 {saved} 篇"
+                )
+
             # Unmatched DOIs -> title fallback
+            unmatched = sum(1 for doi in doi_to_paper if doi not in matched_dois)
+            if unmatched > 0:
+                print(
+                    f"  [OpenAlex] {unmatched} 篇 DOI 未命中，回退到标题搜索"
+                )
             for doi, paper in doi_to_paper.items():
                 if doi not in matched_dois:
                     papers_without_doi.append(paper)
 
         # ── Phase 3: Individual title search ────────────────────
-        for paper in papers_without_doi:
-            abstract = self._search_by_title(paper.title)
-            if abstract:
-                results[paper.dblp_key] = abstract
+        if not doi_only and papers_without_doi:
+            print(
+                f"  [OpenAlex] {len(papers_without_doi)} 篇无 DOI / 未命中，"
+                f"标题搜索 (10 credits/篇)..."
+            )
+            for paper in papers_without_doi:
+                abstract = self._search_by_title(paper.title)
+                if abstract:
+                    _save(paper, abstract)
+        elif doi_only and papers_without_doi:
+            print(
+                f"  [OpenAlex] {len(papers_without_doi)} 篇无 DOI / 未命中，"
+                f"DOI-only 模式跳过"
+            )
+
+        if papers:
+            doi_count = sum(1 for p in papers if p.doi.strip())
+            mode = "DOI-only" if doi_only else "完整"
+            print(
+                f"  [OpenAlex] 本批完成 ({mode}): {len(results)} 篇摘要 "
+                f"({doi_count} DOI, {len(papers) - doi_count} 标题搜索)"
+            )
 
         return results
 
@@ -156,11 +202,20 @@ class OpenAlexFetcher(AbstractFetcher):
             {normalized_doi: {"abstract": str, "doi": str, "title": str}}
         """
         results: dict[str, dict] = {}
+        total_batches = (len(dois) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE
 
         for i in range(0, len(dois), self._BATCH_CHUNK_SIZE):
             chunk = dois[i:i + self._BATCH_CHUNK_SIZE]
+            batch_num = i // self._BATCH_CHUNK_SIZE + 1
             doi_filter = "|".join(chunk)
-            batch_label = f"batch-{i // self._BATCH_CHUNK_SIZE + 1}"
+            batch_label = f"batch-{batch_num}"
+
+            if total_batches > 1:
+                print(
+                    f"  [OpenAlex] 批次 {batch_num}/{total_batches} "
+                    f"({len(chunk)} DOIs)...",
+                    end=" ", flush=True,
+                )
 
             params = self._build_params(
                 filter=f"doi:{doi_filter}",
@@ -173,16 +228,28 @@ class OpenAlexFetcher(AbstractFetcher):
                 self.SEARCH_URL, params, label=batch_label
             )
             if data is None:
+                if total_batches > 1:
+                    print("0 篇")
                 continue
 
             works = data.get("results", [])
+            with_abstract = sum(
+                1 for w in works
+                if w.get("abstract_inverted_index")
+                and isinstance(w["abstract_inverted_index"], dict)
+                and len(w["abstract_inverted_index"]) > 0
+            )
+            if total_batches > 1:
+                print(f"{len(works)} 篇 ({with_abstract} 有摘要)")
+
             for work in works:
                 work_doi = (work.get("doi") or "").strip()
                 if not work_doi:
                     continue
-                # Normalize: OpenAlex returns full URL, strip prefix
+                # Normalize: OpenAlex returns full URL, strip prefix + lowercase
                 if work_doi.startswith("https://doi.org/"):
                     work_doi = work_doi[len("https://doi.org/"):]
+                work_doi = work_doi.lower()
 
                 results[work_doi] = {
                     "abstract": self._extract_abstract(work) or "",

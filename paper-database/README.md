@@ -109,7 +109,7 @@ python -m paper_database venue list
 
 # Paper
 python -m paper_database paper fetch
-python -m paper_database paper fetch-abstracts
+python -m paper_database paper fetch-abstracts [--doi-only] [--stop-after N]
 python -m paper_database paper fetch-all [--venue X --year Y]
 python -m paper_database paper stats
 
@@ -171,12 +171,19 @@ export OPENALEX_API_KEY="your-key"
 |------|-----|---------|------|
 | ① 论文列表 | DBLP XML 导出 | title, authors, year, doi, dblp_key | 比搜索 API 更准确 |
 | ② 摘要(优先) | Semantic Scholar | abstract (纯文本), citations | 支持 DOI 批量 (500/批) |
-| ③ 摘要(兜底) | OpenAlex | abstract (倒排索引) | **DOI 批量 50/批, 10 credits/批** |
+| ③ 摘要(兜底) | OpenAlex | abstract (倒排索引) | DOI 批量 50 批, 10 credits/批 |
 
-DBLP XML 导出比搜索 API 更准确 — 搜索 API 存在子串匹配问题（如 `venue:MICRO` 会匹配到 Microprocessors 等无关期刊）。
+### OpenAlex 两种模式
 
-OpenAlex 批量优化: 有 DOI 的论文自动 50 篇一组合并为一个 API 请求（pipe 分隔），
-相比逐篇查询节省 ~80% credits。无 DOI 的论文回退到标题搜索。
+| 模式 | 命令 | 消耗 | 适用场景 |
+|------|------|------|---------|
+| **DOI-only** (推荐) | `fetch-abstracts --doi-only` | 10 credits / 50 篇 | 快速低成本获取大量摘要 |
+| 完整模式 | `fetch-abstracts` | DOI 批量 + 标题搜索 10 credits/篇 | 覆盖无 DOI 的论文 |
+
+DOI-only 跳过昂贵的标题搜索，只跑批量 DOI 查询。对于大部分有 DOI 的论文
+（DBLP 覆盖率 >99%），一次 `--doi-only` 就能用极低成本获取几乎全部摘要。
+
+`survey classify --fetch-abstracts` 默认使用 DOI-only 模式。
 
 ## 数据库
 
