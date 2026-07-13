@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS survey_result (
     is_relevant INTEGER DEFAULT NULL,
     relevance_reason TEXT DEFAULT '',
     confidence REAL DEFAULT 0.0,
+    analysis_json TEXT DEFAULT '',
     classified_at TIMESTAMP,
     UNIQUE(survey_id, paper_id)
 );
@@ -89,6 +90,11 @@ class SurveyResultRow:
     is_relevant: Optional[bool]
     relevance_reason: str
     confidence: float
+    # Structured extraction fields
+    research_object: str = ""
+    problem_goal: str = ""
+    method_innovation: str = ""
+    algorithm: str = ""
 
 
 # ── Database class ──────────────────────────────────────────────
@@ -125,6 +131,13 @@ class Database:
     def init_db(self):
         """Create all tables if they don't exist."""
         self.conn.executescript(SCHEMA)
+        # Migrate existing databases: add analysis_json column if missing
+        try:
+            self.conn.execute(
+                "ALTER TABLE survey_result ADD COLUMN analysis_json TEXT DEFAULT ''"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         self.conn.commit()
 
     # ── Venue CRUD ───────────────────────────────────────────
@@ -392,26 +405,29 @@ class Database:
 
     def mark_result(
         self, result_id: int, is_relevant: bool,
-        reason: str = "", confidence: float = 0.0
+        reason: str = "", confidence: float = 0.0,
+        analysis_json: str = "",
     ):
         """Mark a single survey_result as classified."""
         self.conn.execute(
             """UPDATE survey_result
                SET is_relevant = ?, relevance_reason = ?, confidence = ?,
-                   classified_at = ?
+                   analysis_json = ?, classified_at = ?
                WHERE id = ?""",
             (1 if is_relevant else 0, reason, confidence,
+             analysis_json,
              datetime.now(timezone.utc).isoformat(), result_id),
         )
         self.conn.commit()
 
     def mark_batch(self, results: list[dict]):
-        """Batch mark survey_results. Each dict: {id, is_relevant, reason, confidence}."""
+        """Batch mark survey_results. Each dict: {id, is_relevant, reason, confidence, analysis_json}."""
         now = datetime.now(timezone.utc).isoformat()
         rows = [
             (1 if r["is_relevant"] else 0,
              r.get("reason", ""),
              r.get("confidence", 0.0),
+             r.get("analysis_json", ""),
              now,
              r["id"])
             for r in results
@@ -419,7 +435,7 @@ class Database:
         self.conn.executemany(
             """UPDATE survey_result
                SET is_relevant = ?, relevance_reason = ?, confidence = ?,
-                   classified_at = ?
+                   analysis_json = ?, classified_at = ?
                WHERE id = ?""",
             rows,
         )
@@ -437,7 +453,8 @@ class Database:
             f"""SELECT sr.paper_id, p.title, p.authors, p.year,
                        v.name as venue_name, p.doi, p.abstract,
                        p.citation_count, sr.is_relevant,
-                       sr.relevance_reason, sr.confidence
+                       sr.relevance_reason, sr.confidence,
+                       sr.analysis_json
                FROM survey_result sr
                JOIN paper p ON sr.paper_id = p.id
                JOIN venue v ON p.venue_id = v.id
@@ -446,8 +463,18 @@ class Database:
             (survey_id,),
         ).fetchall()
 
-        return [
-            SurveyResultRow(
+        results = []
+        for r in rows:
+            # Parse structured extraction from analysis_json
+            analysis = {}
+            raw = r["analysis_json"] or ""
+            if raw:
+                try:
+                    analysis = json.loads(raw)
+                except json.JSONDecodeError:
+                    pass
+
+            results.append(SurveyResultRow(
                 paper_id=r["paper_id"],
                 title=r["title"],
                 authors=r["authors"],
@@ -459,6 +486,9 @@ class Database:
                 is_relevant=bool(r["is_relevant"]) if r["is_relevant"] is not None else None,
                 relevance_reason=r["relevance_reason"] or "",
                 confidence=r["confidence"] or 0.0,
-            )
-            for r in rows
-        ]
+                research_object=analysis.get("研究对象", ""),
+                problem_goal=analysis.get("问题/目标", ""),
+                method_innovation=analysis.get("方法/创新", ""),
+                algorithm=analysis.get("调度算法", ""),
+            ))
+        return results

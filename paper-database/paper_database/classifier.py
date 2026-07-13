@@ -23,6 +23,11 @@ class ClassificationResult:
     is_relevant: bool
     reason: str
     confidence: float
+    # Structured extraction fields (populated when is_relevant=True)
+    research_object: str = ""      # 研究对象
+    problem_goal: str = ""         # 问题/目标
+    method_innovation: str = ""    # 方法/创新
+    algorithm: str = ""            # 调度算法
 
 
 class CLIClassifier:
@@ -123,11 +128,25 @@ class CLIClassifier:
 
                 # Real classification
                 result = self.classify_single(paper, topic)
+                analysis_json = ""
+                if result.is_relevant and any([
+                    result.research_object,
+                    result.problem_goal,
+                    result.method_innovation,
+                    result.algorithm,
+                ]):
+                    analysis_json = json.dumps({
+                        "研究对象": result.research_object,
+                        "问题/目标": result.problem_goal,
+                        "方法/创新": result.method_innovation,
+                        "调度算法": result.algorithm,
+                    }, ensure_ascii=False)
                 db.mark_result(
                     row["result_id"],
                     result.is_relevant,
                     result.reason,
                     result.confidence,
+                    analysis_json=analysis_json,
                 )
 
                 total_processed += 1
@@ -242,4 +261,8 @@ class CLIClassifier:
             is_relevant=bool(data.get("is_relevant", False)),
             reason=str(data.get("reason", "")),
             confidence=float(data.get("confidence", 0.5)),
+            research_object=str(data.get("研究对象", "")),
+            problem_goal=str(data.get("问题/目标", "")),
+            method_innovation=str(data.get("方法/创新", "")),
+            algorithm=str(data.get("调度算法", "")),
         )

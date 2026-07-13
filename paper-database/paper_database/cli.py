@@ -165,6 +165,18 @@ def paper_fetch_abstracts(ctx, limit):
 
     console.print(f"需要获取摘要: {len(papers_without)} 篇")
 
+    # Build PaperMeta list
+    all_papers = [
+        PaperMeta(
+            title=row["title"],
+            year=row["year"],
+            authors=json.loads(row["authors"]),
+            dblp_key=row["dblp_key"],
+            doi=row.get("doi", "") or "",
+        )
+        for row in papers_without
+    ]
+
     s2 = SemanticScholarFetcher()
     oa = OpenAlexFetcher()
 
@@ -172,47 +184,55 @@ def paper_fetch_abstracts(ctx, limit):
     oa_count = 0
     failed = 0
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task("获取摘要...", total=len(papers_without))
+    # ── Phase 1: Semantic Scholar ──────────────────────────────
+    doi_count = sum(1 for p in all_papers if p.doi.strip())
+    console.print(
+        f"\n[bold]Phase 1: Semantic Scholar[/] "
+        f"({doi_count} 篇有 DOI → batch, 其余标题搜索)"
+    )
+    s2_results = s2.fetch_abstracts_batch(all_papers)
 
-        for row in papers_without:
-            paper = PaperMeta(
-                title=row["title"],
-                year=row["year"],
-                authors=json.loads(row["authors"]),
-                dblp_key=row["dblp_key"],
-                doi=row.get("doi", "") or "",
+    # Write S2 results to DB
+    for p in all_papers:
+        abstract = s2_results.get(p.dblp_key, "")
+        if abstract:
+            db.update_paper_abstract(
+                p.dblp_key, abstract, "semantic_scholar",
+                citation_count=p.citation_count,
+                doi=p.doi,
             )
+            s2_count += 1
 
-            # Try Semantic Scholar first
-            abstract = s2.fetch_abstract(paper)
-            source = "semantic_scholar"
-            if abstract:
-                s2_count += 1
-            else:
-                # Fallback to OpenAlex
+    console.print(f"  S2 成功: {s2_count} 篇")
+
+    # ── Phase 2: OpenAlex fallback ─────────────────────────────
+    remaining = [p for p in all_papers if p.dblp_key not in s2_results]
+    if remaining:
+        console.print(
+            f"\n[bold]Phase 2: OpenAlex 兜底[/] ({len(remaining)} 篇)"
+        )
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("OpenAlex...", total=len(remaining))
+
+            for paper in remaining:
                 abstract = oa.fetch_abstract(paper)
-                source = "openalex"
                 if abstract:
+                    db.update_paper_abstract(
+                        paper.dblp_key, abstract, "openalex",
+                        citation_count=paper.citation_count,
+                        doi=paper.doi,
+                    )
                     oa_count += 1
                 else:
                     failed += 1
-
-            if abstract:
-                db.update_paper_abstract(
-                    row["dblp_key"], abstract, source,
-                    citation_count=paper.citation_count,
-                    doi=paper.doi,
-                )
-
-            progress.update(task, advance=1)
+                progress.update(task, advance=1)
 
     console.print(
-        f"[green]✓[/] S2: {s2_count} | OpenAlex: {oa_count} | "
+        f"\n[green]✓[/] S2: {s2_count} | OpenAlex: {oa_count} | "
         f"Failed: {failed}"
     )
 
@@ -387,7 +407,11 @@ def survey_classify(ctx, survey_id, dry_run, limit, start):
     console.print(f"Survey #{survey_id}: {stats['unclassified']} 篇待分类")
 
     def progress_callback(done, _total, title, result):
-        status = "[green]✓相关[/]" if result.is_relevant else "[dim]✗不相关[/]"
+        if result.is_relevant:
+            algo = f" [{result.algorithm}]" if result.algorithm else ""
+            status = f"[green]✓相关{algo}[/]"
+        else:
+            status = "[dim]✗不相关[/]"
         console.print(f"  [{done}] {status} {title[:70]}...")
 
     classifier.run_survey(

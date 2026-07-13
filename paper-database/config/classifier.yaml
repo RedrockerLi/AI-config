@@ -8,9 +8,10 @@ classifier:
   tool: claude
 
   prompt_template: |
-    你是计算机体系结构领域的论文分类专家。
+    你是计算机体系结构领域的论文分析专家。
 
-    判断以下论文是否与「{topic_name}」相关。
+    第一步：判断以下论文是否与「{topic_name}」相关。
+    第二步：如果相关（is_relevant=true），提取论文的核心信息。
 
     研究主题描述: {topic_description}
     关键词: {topic_keywords}
@@ -18,15 +19,21 @@ classifier:
     论文标题: {title}
     论文摘要: {abstract}
 
-    请严格输出 JSON（不要 markdown 代码块包裹，直接输出裸 JSON）:
-    {{"is_relevant": true, "reason": "一句话中文理由", "confidence": 0.95}}
+    严格输出 JSON（不要 markdown 代码块包裹）:
+    {{
+      "is_relevant": true,
+      "研究对象": "论文研究的硬件/系统对象（如GPU、DRAM、NoC等，可用英文缩写）。不相关则空字符串",
+      "问题/目标": "论文要解决的具体问题或研究目标（中文一句话）。不相关则空字符串",
+      "方法/创新": "论文提出的方法或创新点（中文一句话）。不相关则空字符串",
+      "调度算法": "论文提出的调度算法名称（英文缩写或全称）。不相关则空字符串"
+    }}
 
     判断标准:
-    - 标题或摘要直接出现主题关键词，论文核心贡献即该主题 → is_relevant=true, confidence>=0.9
-    - 该主题是论文的主要研究内容或重要组成部分 → is_relevant=true, confidence 0.7-0.9
-    - 论文涉及该主题但不是核心贡献 → is_relevant=true, confidence 0.5-0.7
-    - 仅在背景、相关工作或未来工作中提及 → is_relevant=false
-    - 完全无关 → is_relevant=false
+    - 标题或摘要直接出现主题关键词，论文核心贡献即该主题 → is_relevant=true
+    - 该主题是论文的主要研究内容或重要组成部分 → is_relevant=true
+    - 论文涉及该主题但不是核心贡献 → is_relevant=true
+    - 仅在背景、相关工作或未来工作中提及 → is_relevant=false，所有提取字段为空字符串
+    - 完全无关 → is_relevant=false，所有提取字段为空字符串
 
   cli_args:
     - "-p"

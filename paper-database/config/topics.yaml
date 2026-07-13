@@ -35,38 +35,29 @@ topics:
       sort_by: ["year", "venue_name"]
       columns:
         - field: title
-          header: "论文标题"
+          header: "标题"
           width: 60
-        - field: authors
-          header: "作者"
-          width: 30
-          transform: "join_comma"
+        - field: venue_name
+          header: "出处"
+          width: 18
         - field: year
           header: "年份"
           width: 8
-        - field: venue_name
-          header: "会议/期刊"
-          width: 18
         - field: doi
-          header: "DOI"
+          header: "链接"
           width: 30
-        - field: abstract
-          header: "摘要"
-          width: 80
-        - field: is_relevant
-          header: "是否调度相关"
-          width: 12
-          transform: "bool_to_yes_no"
-        - field: relevance_reason
-          header: "判断理由"
+        - field: research_object
+          header: "研究对象"
+          width: 20
+        - field: problem_goal
+          header: "问题/目标"
           width: 50
-        - field: confidence
-          header: "置信度"
-          width: 10
-          transform: "percent"
-        - field: citation_count
-          header: "引用数"
-          width: 10
+        - field: method_innovation
+          header: "方法/创新"
+          width: 50
+        - field: algorithm
+          header: "调度算法"
+          width: 20
 
   # ── 示例: 添加更多主题 ──────────────────────────────────────
   # - key: power

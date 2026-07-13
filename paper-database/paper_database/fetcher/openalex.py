@@ -1,9 +1,15 @@
 """OpenAlex API client — fallback abstract fetcher.
 
 OpenAlex: https://api.openalex.org/
-No API key required. Rate limit: ~10 req/s.
+Free API key required for meaningful usage (100,000 credits/day).
+Without key: 100 credits/day (~10 list queries).
+Get a key: https://openalex.org/settings/api
+
+Set OPENALEX_API_KEY environment variable to use a key.
 """
 
+import os
+import time
 from typing import Optional
 
 import httpx
@@ -16,8 +22,22 @@ class OpenAlexFetcher(AbstractFetcher):
 
     SEARCH_URL = "https://api.openalex.org/works"
 
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, timeout: float = 30.0, delay: float = 0.5):
+        """
+        Args:
+            timeout: HTTP request timeout in seconds.
+            delay: Seconds between requests. With API key: 0.5s (~2 req/s
+                   for list queries at 10 credits each, safe under the
+                   100,000 credit daily cap).
+        """
         self.timeout = timeout
+        self.delay = delay
+        self._api_key = os.environ.get("OPENALEX_API_KEY", "")
+        self._headers = {}
+        if self._api_key:
+            self._headers["User-Agent"] = (
+                "paper-database/0.1 (mailto:paper-database@example.com)"
+            )
 
     def fetch_papers_by_venue_year(
         self, venue: VenueMeta, year: int
@@ -26,27 +46,31 @@ class OpenAlexFetcher(AbstractFetcher):
         return []
 
     def fetch_abstract(self, paper: PaperMeta) -> Optional[str]:
-        """Search OpenAlex by title (or DOI) and retrieve abstract."""
+        """Search OpenAlex by DOI (preferred) or title and retrieve abstract."""
+        try:
+            # Prefer DOI search if available
+            if paper.doi:
+                result = self._search_by_doi(paper.doi)
+                if result:
+                    return result
 
-        # Prefer DOI search if available
-        if paper.doi:
-            result = self._search_by_doi(paper.doi)
-            if result:
-                return result
-
-        # Fallback to title search
-        return self._search_by_title(paper.title)
+            # Fallback to title search
+            result = self._search_by_title(paper.title)
+            return result
+        finally:
+            # Always delay between requests
+            time.sleep(self.delay)
 
     def _search_by_doi(self, doi: str) -> Optional[str]:
         """Search OpenAlex by DOI."""
-        params = {
-            "filter": f"doi:{doi}",
-            "select": "title,abstract_inverted_index,authorships,cited_by_count",
-            "per_page": 1,
-        }
+        params = self._build_params(
+            filter=f"doi:{doi}",
+            per_page=1,
+        )
         try:
             response = httpx.get(
-                self.SEARCH_URL, params=params, timeout=self.timeout
+                self.SEARCH_URL, params=params, headers=self._headers,
+                timeout=self.timeout,
             )
             response.raise_for_status()
             data = response.json()
@@ -61,19 +85,18 @@ class OpenAlexFetcher(AbstractFetcher):
 
     def _search_by_title(self, title: str) -> Optional[str]:
         """Search OpenAlex by title."""
-        # Clean title
         query = title.strip().rstrip(".")
         if len(query) > 300:
             query = query[:300]
 
-        params = {
-            "search": query,
-            "select": "title,abstract_inverted_index,authorships,cited_by_count",
-            "per_page": 3,
-        }
+        params = self._build_params(
+            search=query,
+            per_page=3,
+        )
         try:
             response = httpx.get(
-                self.SEARCH_URL, params=params, timeout=self.timeout
+                self.SEARCH_URL, params=params, headers=self._headers,
+                timeout=self.timeout,
             )
             response.raise_for_status()
             data = response.json()
@@ -112,6 +135,14 @@ class OpenAlexFetcher(AbstractFetcher):
 
         return self._extract_abstract(best)
 
+    def _build_params(self, **kwargs) -> dict:
+        """Build query params, adding api_key if available."""
+        params = dict(kwargs)
+        params.setdefault("select", "title,abstract_inverted_index,authorships,cited_by_count")
+        if self._api_key:
+            params["api_key"] = self._api_key
+        return params
+
     @staticmethod
     def _extract_abstract(work: dict) -> Optional[str]:
         """OpenAlex stores abstracts as an inverted index. Reconstruct the text."""
@@ -119,7 +150,6 @@ class OpenAlexFetcher(AbstractFetcher):
         if not inverted or not isinstance(inverted, dict):
             return None
 
-        # Reconstruct: {word: [positions]} → sorted word list
         word_positions: list[tuple[str, int]] = []
         for word, positions in inverted.items():
             if not isinstance(positions, list):

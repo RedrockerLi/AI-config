@@ -39,6 +39,14 @@ venues:
     year_start: 2016
     year_end: 2026
 
+  - key: dac
+    name: "DAC"
+    type: conference
+    ccf_rank: A
+    dblp_url_prefix: "conf/dac"
+    year_start: 2016
+    year_end: 2026
+
   # ════════════════ CCF-A 期刊 (近10年: 2016-2026) ════════════════
   - key: tc
     name: "IEEE Transactions on Computers"
@@ -73,14 +81,6 @@ venues:
     year_end: 2026
 
   # ════════════════ CCF-B 会议 (近5年: 2021-2026) ════════════════
-  - key: dac
-    name: "DAC"
-    type: conference
-    ccf_rank: B
-    dblp_url_prefix: "conf/dac"
-    year_start: 2021
-    year_end: 2026
-
   - key: iccad
     name: "ICCAD"
     type: conference
@@ -105,18 +105,11 @@ venues:
     year_start: 2021
     year_end: 2026
 
-  - key: emsoft
-    name: "EMSOFT"
-    type: conference
-    ccf_rank: B
-    dblp_url_prefix: "conf/emsoft"
-    year_start: 2021
-    year_end: 2026
-
+  # ════════════════ CCF-C 会议 (近5年: 2021-2026) ════════════════
   - key: cases
     name: "CASES"
     type: conference
-    ccf_rank: B
+    ccf_rank: C
     dblp_url_prefix: "conf/cases"
     year_start: 2021
     year_end: 2026
@@ -124,7 +117,7 @@ venues:
   - key: fccm
     name: "FCCM"
     type: conference
-    ccf_rank: B
+    ccf_rank: C
     dblp_url_prefix: "conf/fccm"
     year_start: 2021
     year_end: 2026
@@ -132,7 +125,7 @@ venues:
   - key: fpl
     name: "FPL"
     type: conference
-    ccf_rank: B
+    ccf_rank: C
     dblp_url_prefix: "conf/fpl"
     year_start: 2021
     year_end: 2026
@@ -140,7 +133,7 @@ venues:
   - key: fpt
     name: "FPT"
     type: conference
-    ccf_rank: B
+    ccf_rank: C
     dblp_url_prefix: "conf/fpt"
     year_start: 2021
     year_end: 2026
@@ -170,10 +163,11 @@ venues:
     year_start: 2021
     year_end: 2026
 
+  # ════════════════ CCF-C 期刊 (近5年: 2021-2026) ════════════════
   - key: jetc
     name: "ACM Journal on Emerging Technologies in Computing Systems"
     type: journal
-    ccf_rank: B
+    ccf_rank: C
     dblp_url_prefix: "journals/jetc"
     year_start: 2021
     year_end: 2026
