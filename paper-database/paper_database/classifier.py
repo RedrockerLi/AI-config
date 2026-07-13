@@ -118,21 +118,21 @@ class DeepSeekClassifier:
         start: int = 1,
         progress_callback: Optional[Callable] = None,
         abstract_fetcher=None,
+        papers_db: Optional[Database] = None,
     ):
         """Run classification for all unclassified papers in a survey.
 
         Args:
-            db: Database instance.
+            db: Survey Database instance (classification results).
             survey_id: Survey ID to process.
             topic: Topic configuration.
             dry_run: If True, print prompts without calling API.
             limit: Max papers to classify (None = all).
             start: Skip first (start-1) papers (for resume).
             progress_callback: Called after each classification.
-            abstract_fetcher: Optional AbstractFetcher. When provided, papers
-                missing abstracts are fetched on-the-fly before classification.
-                Fetching runs in a thread pool and overlaps with classification
-                of papers that already have abstracts.
+            abstract_fetcher: Optional AbstractFetcher.
+            papers_db: Main papers Database (for reading/writing abstracts).
+                Defaults to ``db`` if not provided.
         """
         batch_size = 50
         total_processed = 0
@@ -188,6 +188,16 @@ class DeepSeekClassifier:
                             return
                     continue
 
+                # ── Check papers_db for existing abstracts ─────────
+                # survey DB 的 paper 表是快照，需查主库确认是否有摘要
+                _abstract_db = papers_db or db
+                if _abstract_db is not db:
+                    for paper in papers:
+                        if not paper.abstract.strip():
+                            existing = _abstract_db.get_paper_abstract(paper.dblp_key)
+                            if existing:
+                                paper.abstract = existing
+
                 # ── Classification (with optional on-the-fly abstract fetch) ─
                 # 逐篇保存回调: 每篇分类完立即写 DB，Ctrl+C 不丢
                 def _save(paper: PaperMeta, result: ClassificationResult):
@@ -215,7 +225,7 @@ class DeepSeekClassifier:
                 if abstract_fetcher is not None:
                     await self._classify_with_fetch(
                         papers, topic, progress_callback,
-                        abstract_fetcher, db, row_index, _save,
+                        abstract_fetcher, _abstract_db, row_index, _save,
                     )
                 else:
                     await self.classify_batch(

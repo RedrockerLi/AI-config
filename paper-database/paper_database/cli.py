@@ -668,6 +668,9 @@ def survey_classify(ctx, survey_id, dry_run, limit, start, no_export, fetch_abst
             status = "[dim]✗[/]"
         console.print(f"  [{done}] {status} {title[:70]}...")
 
+    # Main papers DB for reading/writing abstracts (not survey snapshot)
+    papers_db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
+
     asyncio.run(classifier.run_survey(
         survey_db, survey_id, topic_cfg,
         dry_run=dry_run,
@@ -675,6 +678,7 @@ def survey_classify(ctx, survey_id, dry_run, limit, start, no_export, fetch_abst
         start=start,
         progress_callback=progress_callback,
         abstract_fetcher=oa_fetcher,
+        papers_db=papers_db,
     ))
 
     # Show final stats

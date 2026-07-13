@@ -266,6 +266,14 @@ class Database:
         )
         self.conn.commit()
 
+    def get_paper_abstract(self, dblp_key: str) -> Optional[str]:
+        """Get abstract for a paper by dblp_key. Returns None if not found."""
+        row = self.conn.execute(
+            "SELECT abstract FROM paper WHERE dblp_key = ? AND abstract != ''",
+            (dblp_key,),
+        ).fetchone()
+        return row["abstract"] if row else None
+
     def update_paper_abstract(
         self, dblp_key: str, abstract: str, source: str,
         citation_count: int = 0, doi: str = ""
