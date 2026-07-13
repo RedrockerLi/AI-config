@@ -259,10 +259,12 @@ class DeepSeekClassifier:
         fetch_task = None
         if missing:
             loop = asyncio.get_running_loop()
+            # NOTE: 不传 db — 线程池不能共享 SQLite 连接
+            # 摘要结果在 await 后由主线程写入
             fetch_task = loop.run_in_executor(
                 None,
                 lambda: abstract_fetcher.fetch_abstracts_batch(
-                    missing, db=db, doi_only=True
+                    missing, doi_only=True
                 ),
             )
 
@@ -274,13 +276,16 @@ class DeepSeekClassifier:
                 save_callback=save_callback,
             )
 
-        # ── Wait for abstracts → classify missing ──────────────
+        # ── Wait for abstracts → write DB (main thread) → classify ─
         if fetch_task:
             fetched = await fetch_task
             for paper in missing:
                 abstract = fetched.get(paper.dblp_key, "")
                 if abstract:
                     paper.abstract = abstract
+                    db.update_paper_abstract(
+                        paper.dblp_key, abstract, "openalex",
+                    )
 
             await self.classify_batch(
                 missing, topic,
