@@ -82,8 +82,13 @@ class DeepSeekClassifier:
         papers: list[PaperMeta],
         topic: TopicConfig,
         progress_callback: Optional[Callable] = None,
+        save_callback: Optional[Callable] = None,
     ) -> list[ClassificationResult]:
-        """Classify multiple papers concurrently (bounded by semaphore)."""
+        """Classify multiple papers concurrently (bounded by semaphore).
+
+        If ``save_callback`` is provided, it is called for each paper
+        immediately after classification completes (survives Ctrl+C).
+        """
         completed = 0
         total = len(papers)
         lock = asyncio.Lock()
@@ -92,6 +97,8 @@ class DeepSeekClassifier:
             nonlocal completed
             async with self._sem:
                 result = await self.classify_single(paper, topic)
+            if save_callback:
+                save_callback(paper, result)
             async with lock:
                 completed += 1
                 if progress_callback:
@@ -182,23 +189,41 @@ class DeepSeekClassifier:
                     continue
 
                 # ── Classification (with optional on-the-fly abstract fetch) ─
+                # 逐篇保存回调: 每篇分类完立即写 DB，Ctrl+C 不丢
+                def _save(paper: PaperMeta, result: ClassificationResult):
+                    row = row_index.get(paper.dblp_key, {})
+                    analysis_json = ""
+                    if result.is_relevant and any([
+                        result.research_object, result.problem_goal,
+                        result.method_innovation, result.algorithm,
+                    ]):
+                        analysis_json = json.dumps({
+                            "priority": result.priority,
+                            "research_object": result.research_object,
+                            "problem_goal": result.problem_goal,
+                            "method_innovation": result.method_innovation,
+                            "algorithm": result.algorithm,
+                        }, ensure_ascii=False)
+                    db.mark_result(
+                        row.get("result_id", 0),
+                        is_relevant=result.priority,
+                        reason=result.reason,
+                        confidence=result.confidence,
+                        analysis_json=analysis_json,
+                    )
+
                 if abstract_fetcher is not None:
-                    results_map = await self._classify_with_fetch(
+                    await self._classify_with_fetch(
                         papers, topic, progress_callback,
-                        abstract_fetcher, db,
+                        abstract_fetcher, db, row_index, _save,
                     )
                 else:
-                    results = await self.classify_batch(
+                    await self.classify_batch(
                         papers, topic,
                         progress_callback=progress_callback,
+                        save_callback=_save,
                     )
-                    results_map = {
-                        p.dblp_key: r for p, r in zip(papers, results)
-                    }
 
-                # Build batch results for DB write
-                db_results = self._build_db_results(papers, results_map, row_index)
-                db.mark_batch(db_results)
                 total_processed += len(papers)
 
                 if limit and total_processed >= limit:
@@ -218,7 +243,9 @@ class DeepSeekClassifier:
         progress_callback: Optional[Callable],
         abstract_fetcher,
         db: Database,
-    ) -> dict[str, ClassificationResult]:
+        row_index: dict[str, dict],
+        save_callback: Callable,
+    ) -> None:
         """Classify papers, fetching missing abstracts on-the-fly.
 
         Abstracts are fetched in a thread pool (to avoid blocking the
@@ -227,8 +254,6 @@ class DeepSeekClassifier:
         """
         missing = [p for p in papers if not p.abstract.strip()]
         ready   = [p for p in papers if p.abstract.strip()]
-
-        results_map: dict[str, ClassificationResult] = {}
 
         # ── Launch abstract fetch in thread pool (non-blocking) ─
         fetch_task = None
@@ -243,67 +268,25 @@ class DeepSeekClassifier:
 
         # ── Classify ready papers (overlaps with fetching) ────
         if ready:
-            ready_results = await self.classify_batch(
+            await self.classify_batch(
                 ready, topic,
                 progress_callback=progress_callback,
+                save_callback=save_callback,
             )
-            for paper, result in zip(ready, ready_results):
-                results_map[paper.dblp_key] = result
 
-        # ── Wait for abstracts → update DB → classify ────────
+        # ── Wait for abstracts → classify missing ──────────────
         if fetch_task:
             fetched = await fetch_task
             for paper in missing:
                 abstract = fetched.get(paper.dblp_key, "")
                 if abstract:
                     paper.abstract = abstract
-                    db.update_paper_abstract(
-                        paper.dblp_key, abstract, "openalex",
-                    )
 
-            missing_results = await self.classify_batch(
+            await self.classify_batch(
                 missing, topic,
                 progress_callback=progress_callback,
+                save_callback=save_callback,
             )
-            for paper, result in zip(missing, missing_results):
-                results_map[paper.dblp_key] = result
-
-        return results_map
-
-    # ── Internal helpers ─────────────────────────────────────
-
-    @staticmethod
-    def _build_db_results(
-        papers: list[PaperMeta],
-        results_map: dict[str, ClassificationResult],
-        row_index: dict[str, dict],
-    ) -> list[dict]:
-        """Build list of dicts for db.mark_batch()."""
-        db_results = []
-        for paper in papers:
-            result = results_map[paper.dblp_key]
-            analysis_json = ""
-            if result.is_relevant and any([
-                result.research_object,
-                result.problem_goal,
-                result.method_innovation,
-                result.algorithm,
-            ]):
-                analysis_json = json.dumps({
-                    "priority": result.priority,
-                    "research_object": result.research_object,
-                    "problem_goal": result.problem_goal,
-                    "method_innovation": result.method_innovation,
-                    "algorithm": result.algorithm,
-                }, ensure_ascii=False)
-            db_results.append({
-                "id": row_index[paper.dblp_key]["result_id"],
-                "is_relevant": result.priority,
-                "reason": result.reason,
-                "confidence": result.confidence,
-                "analysis_json": analysis_json,
-            })
-        return db_results
 
     def _build_prompt(self, paper: PaperMeta, topic: TopicConfig) -> str:
         abstract = paper.abstract or "（无摘要，仅根据标题判断）"

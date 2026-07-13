@@ -117,7 +117,7 @@ class OpenAlexFetcher(AbstractFetcher):
             else:
                 papers_without_doi.append(p)
 
-        # ── Phase 2: Batch DOI lookup ───────────────────────────
+        # ── Phase 2: Batch DOI lookup (逐批保存，防 Ctrl+C 丢失) ─
         if papers_with_doi:
             doi_to_paper: dict[str, PaperMeta] = {}
             for p in papers_with_doi:
@@ -128,27 +128,34 @@ class OpenAlexFetcher(AbstractFetcher):
                 doi = doi.lower()
                 doi_to_paper[doi] = p
 
-            batch_results = self._fetch_batch_by_dois(
-                list(doi_to_paper.keys())
-            )
-
-            # Count abstracts found
-            saved = 0
+            dois = list(doi_to_paper.keys())
+            total_batches = (len(dois) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE
             matched_dois: set[str] = set()
-            for doi, info in batch_results.items():
-                paper = doi_to_paper.get(doi)
-                if paper is None:
-                    continue
-                abstract = (info.get("abstract") or "").strip()
-                if abstract:
-                    _save(paper, abstract)
-                    saved += 1
-                    matched_dois.add(doi)
+            batch_saved = 0
 
-            if batch_results:
+            for i in range(0, len(dois), self._BATCH_CHUNK_SIZE):
+                chunk = dois[i:i + self._BATCH_CHUNK_SIZE]
+                batch_num = i // self._BATCH_CHUNK_SIZE + 1
+                batch_label = f"batch-{batch_num}"
+
+                # ── Fetch one batch ─────────────────────────────
+                batch_results = self._fetch_one_doi_batch(chunk, batch_num, total_batches)
+
+                # ── Save immediately ────────────────────────────
+                for doi, info in batch_results.items():
+                    paper = doi_to_paper.get(doi)
+                    if paper is None:
+                        continue
+                    abstract = (info.get("abstract") or "").strip()
+                    if abstract:
+                        _save(paper, abstract)
+                        batch_saved += 1
+                        matched_dois.add(doi)
+
+            if total_batches > 1:
                 print(
-                    f"  [OpenAlex] 批量完成: {len(batch_results)}/{len(doi_to_paper)} "
-                    f"DOI 命中, 已保存 {saved} 篇"
+                    f"  [OpenAlex] 批量完成: {len(matched_dois)}/{len(doi_to_paper)} "
+                    f"DOI 命中, 已保存 {batch_saved} 篇"
                 )
 
             # Unmatched DOIs -> title fallback
@@ -187,75 +194,66 @@ class OpenAlexFetcher(AbstractFetcher):
 
         return results
 
-    def _fetch_batch_by_dois(
-        self, dois: list[str]
+    def _fetch_one_doi_batch(
+        self, dois: list[str], batch_num: int = 1, total_batches: int = 1
     ) -> dict[str, dict]:
-        """Batch-lookup works by up to 50 DOIs via pipe-delimited filter.
+        """Fetch a single batch of DOIs via pipe-delimited filter.
 
         ``GET /works?filter=doi:a|b|...&per_page=200&select=...``
-        10 credits per batch regardless of DOI count (up to 50).
-
-        Args:
-            dois: Plain DOI strings, e.g. "10.1234/abcde".
+        10 credits per batch (up to 50 DOIs).
 
         Returns:
             {normalized_doi: {"abstract": str, "doi": str, "title": str}}
         """
         results: dict[str, dict] = {}
-        total_batches = (len(dois) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE
+        doi_filter = "|".join(dois)
+        batch_label = f"batch-{batch_num}"
 
-        for i in range(0, len(dois), self._BATCH_CHUNK_SIZE):
-            chunk = dois[i:i + self._BATCH_CHUNK_SIZE]
-            batch_num = i // self._BATCH_CHUNK_SIZE + 1
-            doi_filter = "|".join(chunk)
-            batch_label = f"batch-{batch_num}"
+        if total_batches > 1:
+            print(
+                f"  [OpenAlex] 批次 {batch_num}/{total_batches} "
+                f"({len(dois)} DOIs)...",
+                end=" ", flush=True,
+            )
 
+        params = self._build_params(
+            filter=f"doi:{doi_filter}",
+            per_page=200,
+        )
+        params["select"] = "id,doi,title,abstract_inverted_index"
+
+        data = self._fetch_with_retry(
+            self.SEARCH_URL, params, label=batch_label
+        )
+        if data is None:
             if total_batches > 1:
-                print(
-                    f"  [OpenAlex] 批次 {batch_num}/{total_batches} "
-                    f"({len(chunk)} DOIs)...",
-                    end=" ", flush=True,
-                )
+                print("0 篇")
+            return results
 
-            params = self._build_params(
-                filter=f"doi:{doi_filter}",
-                per_page=200,
-            )
-            # Override select: we need doi for reverse-matching
-            params["select"] = "id,doi,title,abstract_inverted_index"
+        works = data.get("results", [])
+        with_abstract = sum(
+            1 for w in works
+            if w.get("abstract_inverted_index")
+            and isinstance(w["abstract_inverted_index"], dict)
+            and len(w["abstract_inverted_index"]) > 0
+        )
+        if total_batches > 1:
+            print(f"{len(works)} 篇 ({with_abstract} 有摘要)")
 
-            data = self._fetch_with_retry(
-                self.SEARCH_URL, params, label=batch_label
-            )
-            if data is None:
-                if total_batches > 1:
-                    print("0 篇")
+        for work in works:
+            work_doi = (work.get("doi") or "").strip()
+            if not work_doi:
                 continue
+            # Normalize: OpenAlex returns full URL, strip prefix + lowercase
+            if work_doi.startswith("https://doi.org/"):
+                work_doi = work_doi[len("https://doi.org/"):]
+            work_doi = work_doi.lower()
 
-            works = data.get("results", [])
-            with_abstract = sum(
-                1 for w in works
-                if w.get("abstract_inverted_index")
-                and isinstance(w["abstract_inverted_index"], dict)
-                and len(w["abstract_inverted_index"]) > 0
-            )
-            if total_batches > 1:
-                print(f"{len(works)} 篇 ({with_abstract} 有摘要)")
-
-            for work in works:
-                work_doi = (work.get("doi") or "").strip()
-                if not work_doi:
-                    continue
-                # Normalize: OpenAlex returns full URL, strip prefix + lowercase
-                if work_doi.startswith("https://doi.org/"):
-                    work_doi = work_doi[len("https://doi.org/"):]
-                work_doi = work_doi.lower()
-
-                results[work_doi] = {
-                    "abstract": self._extract_abstract(work) or "",
-                    "doi": work_doi,
-                    "title": work.get("title", "") or "",
-                }
+            results[work_doi] = {
+                "abstract": self._extract_abstract(work) or "",
+                "doi": work_doi,
+                "title": work.get("title", "") or "",
+            }
 
         return results
 

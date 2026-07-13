@@ -390,19 +390,8 @@ def paper_fetch_abstracts(ctx, limit, stop_after, doi_only):
                 f"\n[bold]Phase 1: Semantic Scholar[/] "
                 f"({doi_count} 篇有 DOI → batch, 其余标题搜索)"
             )
-            s2_results = s2.fetch_abstracts_batch(all_papers)
-
-            # Write S2 results to DB
-            for p in all_papers:
-                abstract = s2_results.get(p.dblp_key, "")
-                if abstract:
-                    db.update_paper_abstract(
-                        p.dblp_key, abstract, "semantic_scholar",
-                        citation_count=p.citation_count,
-                        doi=p.doi,
-                    )
-                    batch_s2 += 1
-
+            s2_results = s2.fetch_abstracts_batch(all_papers, db=db)
+            batch_s2 += len(s2_results)
             console.print(f"  S2 成功: {batch_s2} 篇")
         else:
             console.print(
