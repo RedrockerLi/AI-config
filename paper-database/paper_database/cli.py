@@ -646,14 +646,18 @@ def survey_classify(ctx, survey_id, dry_run, limit, start, no_export, fetch_abst
         f"Concurrency: {config.classifier.max_concurrency}[/]"
     )
 
+    # Main papers DB for reading/writing abstracts (not survey snapshot)
+    papers_db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
+
     # Build abstract fetcher (only when --fetch-abstracts, not dry-run)
     oa_fetcher = None
     if fetch_abstracts and not dry_run:
         oa_fetcher = OpenAlexFetcher()
-        without_abstract = survey_db.count_papers() - survey_db.count_papers_with_abstract()
+        without_abstract = papers_db.count_papers() - papers_db.count_papers_with_abstract()
         if without_abstract > 0:
             console.print(
-                f"[dim]--fetch-abstracts: 将自动补全 {without_abstract} 篇缺失摘要[/]"
+                f"[dim]--fetch-abstracts: {without_abstract} 篇缺少摘要"
+                f"（已有 {papers_db.count_papers_with_abstract()} 篇）[/]"
             )
 
     def progress_callback(done, _total, title, result):
@@ -667,9 +671,6 @@ def survey_classify(ctx, survey_id, dry_run, limit, start, no_export, fetch_abst
         else:
             status = "[dim]✗[/]"
         console.print(f"  [{done}] {status} {title[:70]}...")
-
-    # Main papers DB for reading/writing abstracts (not survey snapshot)
-    papers_db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
 
     asyncio.run(classifier.run_survey(
         survey_db, survey_id, topic_cfg,
