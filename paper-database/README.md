@@ -13,20 +13,19 @@ python -m paper_database venue init
 
 # 3. 拉取论文 (以 HPCA 2024 为例测试)
 python -m paper_database paper fetch-all --venue hpca --year 2024
-python -m paper_database paper fetch-abstracts # 摘要
 
 # 4. 创建调研
 python -m paper_database survey create --topic scheduling --name "测试调研"
 
 # 5. 先 dry-run 检查 prompt
-python -m paper_database survey classify --survey-id 1 --dry-run --limit 3
+python -m paper_database survey classify -s 1 --dry-run --limit 3
 
-# 6. 正式分类
-python -m paper_database survey classify --survey-id 1 --limit 10
+# 6. 正式分类 (--fetch-abstracts 自动补摘要，可选)
+python -m paper_database survey classify -s 1 --limit 10 --fetch-abstracts
 
 # 7. 预览 + 导出
-python -m paper_database survey preview --survey-id 1 --relevant-only
-python -m paper_database survey export --survey-id 1 --relevant-only
+python -m paper_database survey preview -s 1 --relevant-only
+python -m paper_database survey export -s 1 --relevant-only
 ```
 
 ## 架构
@@ -121,7 +120,7 @@ python -m paper_database survey stats --survey-id X
 python -m paper_database survey delete --survey-id X
 
 # Classify
-python -m paper_database survey classify --survey-id X [--dry-run] [--limit N] [--start N]
+python -m paper_database survey classify -s X [--dry-run] [--limit N] [--start N] [--fetch-abstracts]
 
 # Export
 python -m paper_database survey preview --survey-id X [--relevant-only]

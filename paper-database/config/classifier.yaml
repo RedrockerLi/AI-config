@@ -24,7 +24,7 @@ classifier:
       max_concurrency: 32
 
     localhost:
-      api_base_url: "http://localhost:8800/v1"
+      api_base_url: "http://localhost:8800"
       api_key: "tb-25b6aeaef5478bb1563e328ccfb71016"
       model: "minimax-m27"
       max_tokens: 800
