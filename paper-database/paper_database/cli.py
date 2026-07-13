@@ -34,9 +34,16 @@ console = Console()
 
 # ── Helpers ─────────────────────────────────────────────────────
 
-def _get_db(db_path: str = "papers.db") -> Database:
-    """Get a Database instance and ensure tables exist."""
-    db = Database(db_path)
+def _get_db(db_path: str = "papers.db", config_dir: str = "config") -> Database:
+    """Get a Database instance and ensure tables exist.
+
+    Relative db_path is resolved against the project root (parent of config_dir),
+    so the DB is always in the project directory regardless of CWD.
+    """
+    p = Path(db_path)
+    if not p.is_absolute():
+        p = Path(config_dir).resolve().parent / p
+    db = Database(str(p))
     db.init_db()
     return db
 
@@ -75,7 +82,7 @@ def venue():
 def venue_init(ctx):
     """从 config/venues.yaml 初始化 venue 表."""
     config = _resolve_config(ctx.obj["config_dir"])
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
 
     db.init_venues_from_config(config.venues)
     console.print(f"[green]✓[/] 已初始化 {len(config.venues)} 个 venue")
@@ -85,7 +92,7 @@ def venue_init(ctx):
 @click.pass_context
 def venue_list(ctx):
     """列出所有 venue."""
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
     venues = db.list_venues()
 
     table = RichTable(title="Venues")
@@ -120,7 +127,7 @@ def paper():
 def paper_fetch(ctx, venue_key, year_filter):
     """从 DBLP 拉取论文列表."""
     config = _resolve_config(ctx.obj["config_dir"])
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
     fetcher = DBLPFetcher()
 
     venues = config.venues
@@ -156,7 +163,7 @@ def paper_fetch(ctx, venue_key, year_filter):
 @click.pass_context
 def paper_fetch_abstracts(ctx, limit):
     """从 Semantic Scholar / OpenAlex 补全摘要."""
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
 
     papers_without = db.get_papers_without_abstract(limit=limit or 10000)
     if not papers_without:
@@ -253,7 +260,7 @@ def paper_fetch_all(ctx, venue_key, year_filter):
 @click.pass_context
 def paper_stats(ctx):
     """查看论文统计."""
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
     stats = db.paper_stats()
 
     console.print(f"\n[bold]论文统计[/]")
@@ -287,7 +294,7 @@ def survey():
 def survey_create(ctx, topic, name, venue_filter, year_filter):
     """创建新调研."""
     config = _resolve_config(ctx.obj["config_dir"])
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
 
     topic_cfg = config.get_topic(topic)
     if topic_cfg is None:
@@ -322,7 +329,7 @@ def survey_create(ctx, topic, name, venue_filter, year_filter):
 @click.pass_context
 def survey_list(ctx):
     """列出所有调研."""
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
     surveys = db.list_surveys()
 
     table = RichTable(title="Surveys")
@@ -348,7 +355,7 @@ def survey_list(ctx):
 @click.pass_context
 def survey_stats(ctx, survey_id):
     """查看调研进度."""
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
     s = db.get_survey(survey_id)
     if s is None:
         console.print(f"[red]✗[/] Survey #{survey_id} 不存在")
@@ -372,7 +379,7 @@ def survey_stats(ctx, survey_id):
 @click.pass_context
 def survey_delete(ctx, survey_id):
     """删除调研."""
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
     db.delete_survey(survey_id)
     console.print(f"[green]✓[/] 已删除 Survey #{survey_id}")
 
@@ -386,7 +393,7 @@ def survey_delete(ctx, survey_id):
 def survey_classify(ctx, survey_id, dry_run, limit, start):
     """运行分类 (subprocess 调本地 CLI LLM)."""
     config = _resolve_config(ctx.obj["config_dir"])
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
 
     s = db.get_survey(survey_id)
     if s is None:
@@ -436,7 +443,7 @@ def survey_classify(ctx, survey_id, dry_run, limit, start):
 def survey_preview(ctx, survey_id, relevant_only, limit):
     """终端预览分类结果."""
     config = _resolve_config(ctx.obj["config_dir"])
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
 
     s = db.get_survey(survey_id)
     if s is None:
@@ -460,7 +467,7 @@ def survey_preview(ctx, survey_id, relevant_only, limit):
 def survey_export(ctx, survey_id, output, relevant_only):
     """导出结果到 Excel/CSV."""
     config = _resolve_config(ctx.obj["config_dir"])
-    db = _get_db(ctx.obj["db_path"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
 
     s = db.get_survey(survey_id)
     if s is None:
