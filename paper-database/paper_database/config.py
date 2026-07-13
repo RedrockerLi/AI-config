@@ -1,5 +1,6 @@
 """Configuration loader: YAML files → Python dataclasses."""
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -86,10 +87,53 @@ class TopicConfig:
         )
 
 
+def _resolve_env(value: str) -> str:
+    """Resolve ``{env:VAR_NAME}`` placeholders in a config string value.
+
+    Returns the literal value if no placeholder is found, otherwise
+    substitutes the referenced environment variable.  If the variable
+    is not set the placeholder is left as-is so the downstream code
+    can raise a clear error.
+    """
+    import re as _re
+
+    def _replace(match: _re.Match) -> str:
+        var_name = match.group(1)
+        return os.environ.get(var_name, match.group(0))
+
+    return _re.sub(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}", _replace, value)
+
+
+@dataclass
+class ProviderConfig:
+    """Provider-specific settings (api_base_url, api_key, model, etc.)."""
+
+    api_base_url: str = "https://api.deepseek.com"
+    api_key: str = ""
+    model: str = "deepseek-v4-pro"
+    max_tokens: int = 500
+    temperature: float = 0.0
+    enable_thinking: bool = False
+    max_concurrency: int = 32
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ProviderConfig":
+        return cls(
+            api_base_url=d.get("api_base_url", "https://api.deepseek.com"),
+            api_key=_resolve_env(d.get("api_key", "")),
+            model=d.get("model", "deepseek-v4-pro"),
+            max_tokens=d.get("max_tokens", 500),
+            temperature=d.get("temperature", 0.0),
+            enable_thinking=d.get("enable_thinking", False),
+            max_concurrency=d.get("max_concurrency", 32),
+        )
+
+
 @dataclass
 class ClassifierConfig:
     provider: str = "deepseek"
     api_base_url: str = "https://api.deepseek.com"
+    api_key: str = ""
     model: str = "deepseek-v4-pro"
     max_tokens: int = 500
     temperature: float = 0.0
@@ -101,14 +145,31 @@ class ClassifierConfig:
 
     @classmethod
     def from_dict(cls, d: dict) -> "ClassifierConfig":
+        provider_name = d.get("provider", "deepseek")
+
+        # Load provider-specific settings
+        providers_dict = d.get("providers", {})
+        if providers_dict:
+            # New format: read from providers.<name>
+            provider_data = dict(providers_dict.get(provider_name, {}))
+            # Top-level values serve as defaults for per-provider overrides
+            for key in ("max_concurrency",):
+                if key not in provider_data:
+                    provider_data[key] = d.get(key, 32)
+            provider = ProviderConfig.from_dict(provider_data)
+        else:
+            # Backward compat: old flat format
+            provider = ProviderConfig.from_dict(d)
+
         return cls(
-            provider=d.get("provider", "deepseek"),
-            api_base_url=d.get("api_base_url", "https://api.deepseek.com"),
-            model=d.get("model", "deepseek-v4-pro"),
-            max_tokens=d.get("max_tokens", 500),
-            temperature=d.get("temperature", 0.0),
-            enable_thinking=d.get("enable_thinking", False),
-            max_concurrency=d.get("max_concurrency", 32),
+            provider=provider_name,
+            api_base_url=provider.api_base_url,
+            api_key=provider.api_key,
+            model=provider.model,
+            max_tokens=provider.max_tokens,
+            temperature=provider.temperature,
+            enable_thinking=provider.enable_thinking,
+            max_concurrency=provider.max_concurrency,
             timeout=d.get("timeout", 60),
             max_retries=d.get("max_retries", 3),
             strip_markdown_fence=d.get("strip_markdown_fence", True),

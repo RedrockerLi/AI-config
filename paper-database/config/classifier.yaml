@@ -1,23 +1,39 @@
-# 分类器配置 — DeepSeek API
+# 分类器配置 — 多 provider 支持
+#
+# provider 字段选择当前使用的 LLM 提供商。
+# 每个 provider 在 providers 下独立配置专属参数。
+# 通用参数（并发、超时、重试）在所有 provider 间共享。
 #
 # 默认模型: deepseek-v4-pro (统一模型，同时支持 chat 和 thinking mode)
 # enable_thinking: true 时输出思维链推理内容
 # 思考模式文档: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
 
 classifier:
-  # API provider
-  provider: deepseek
+  # ── 当前使用的 provider ──────────────────────────────────────
+  provider: localhost
 
-  # DeepSeek API settings
-  api_base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-pro"
+  # ── Provider 配置列表 ────────────────────────────────────────
+  providers:
+    deepseek:
+      api_base_url: "https://api.deepseek.com"
+      api_key: "{env:DEEPSEEK_API_KEY}"
+      model: "deepseek-v4-pro"
+      max_tokens: 800
+      temperature: 0.0
+      enable_thinking: true
+      max_concurrency: 32
 
-  # Generation parameters
-  max_tokens: 800
-  temperature: 0.0
-  enable_thinking: true
+    localhost:
+      api_base_url: "http://localhost:8800/v1"
+      api_key: "tb-25b6aeaef5478bb1563e328ccfb71016"
+      model: "minimax-m27"
+      max_tokens: 800
+      temperature: 0.0
+      enable_thinking: false
+      max_concurrency: 8
 
-  # Concurrency — 并发分类数量
+  # ── 通用设置 (provider-agnostic) ─────────────────────────────
+  # 以下为 provider 未指定时的默认值
   max_concurrency: 32
 
   # Retry / resilience

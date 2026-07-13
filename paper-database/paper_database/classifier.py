@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 from dataclasses import dataclass
 from typing import Optional, Callable
@@ -52,12 +51,13 @@ class DeepSeekClassifier:
         self.max_retries = config.max_retries
         self.strip_fence = config.strip_markdown_fence
 
-        self.api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        self.api_key = config.api_key
         if not self.api_key:
             raise ValueError(
-                "DEEPSEEK_API_KEY environment variable not set.\n"
-                "获取 API Key: https://platform.deepseek.com/api_keys\n"
-                "设置方法: export DEEPSEEK_API_KEY=\"sk-your-key-here\""
+                f"{config.provider} API key not configured.\n"
+                "请在 config/classifier.yaml 的 providers 中设置 api_key，"
+                "或使用 {env:VAR_NAME} 引用环境变量。\n"
+                "配置示例: api_key: \"{env:API_KEY}\" 或 api_key: \"sk-your-key-here\""
             )
 
         self._client = httpx.AsyncClient(
