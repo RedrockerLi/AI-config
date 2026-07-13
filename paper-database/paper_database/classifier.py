@@ -234,12 +234,10 @@ class DeepSeekClassifier:
             "max_tokens": self.max_tokens,
         }
 
-        # temperature only valid for deepseek-chat, not reasoner
-        if self.model == "deepseek-chat":
-            body["temperature"] = self.temperature
+        # deepseek-v4-pro supports both temperature and thinking mode
+        body["temperature"] = self.temperature
 
-        # thinking mode for reasoner
-        if self.enable_thinking and self.model == "deepseek-reasoner":
+        if self.enable_thinking:
             body["thinking"] = {"type": "enabled"}
 
         last_error: Optional[Exception] = None

@@ -47,6 +47,17 @@ source ~/.bashrc
 
 Skills 通过硬链接同步到各 AI 工具，编辑 `skills/` 下源文件实时生效。
 
+## 环境变量
+
+paper-database 工具需要以下环境变量：
+
+| 变量 | 用途 | 获取方式 |
+|------|------|---------|
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥（论文分类） | https://platform.deepseek.com/api_keys |
+| `S2_API_KEY` | Semantic Scholar API 密钥（摘要获取加速，非必需） | https://www.semanticscholar.org/product/api |
+
+DeepSeek API 配置（模型、并发数、思考模式等）在 `config/classifier.yaml` 中管理。详见 [paper-database README](paper-database/README.md)。
+
 ## 添加新工具
 
 1. 在对应子目录开发工具

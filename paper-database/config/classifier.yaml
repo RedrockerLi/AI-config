@@ -1,10 +1,7 @@
 # 分类器配置 — DeepSeek API
 #
-# 模型选择:
-#   deepseek-chat      — 通用对话模型 (速度快，成本低)
-#   deepseek-reasoner  — 推理模型 (支持 thinking mode，适合复杂判断)
-#
-# enable_thinking: true 时 deepseek-reasoner 输出思维链推理内容
+# 默认模型: deepseek-v4-pro (统一模型，同时支持 chat 和 thinking mode)
+# enable_thinking: true 时输出思维链推理内容
 # 思考模式文档: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
 
 classifier:
@@ -13,12 +10,12 @@ classifier:
 
   # DeepSeek API settings
   api_base_url: "https://api.deepseek.com"
-  model: "deepseek-chat"              # deepseek-chat | deepseek-reasoner
+  model: "deepseek-v4-pro"
 
   # Generation parameters
   max_tokens: 500
   temperature: 0.0
-  enable_thinking: false              # 仅 deepseek-reasoner 支持
+  enable_thinking: true
 
   # Concurrency — 并发分类数量
   max_concurrency: 32

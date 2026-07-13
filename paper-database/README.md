@@ -1,6 +1,6 @@
 # Paper Database — 文献库管理系统
 
-从 DBLP、Semantic Scholar、OpenAlex 自动拉取论文元数据和摘要，通过本地 CLI LLM 工具逐篇判断是否与指定主题相关，导出 CSV。
+从 DBLP、Semantic Scholar、OpenAlex 自动拉取论文元数据和摘要，通过 DeepSeek API 并发判断是否与指定主题相关，导出 CSV。
 
 ## 快速开始
 
@@ -34,7 +34,7 @@ python -m paper_database survey export --survey-id 1 --relevant-only
 用户
   ├─ 终端直接跑 CLI  ←── 模式A: 唯一的分类型执行路径
   │   python -m paper_database survey classify
-  │        └─ classifier.py → subprocess → claude CLI → 写 SQLite
+  │        └─ classifier.py → httpx.AsyncClient → DeepSeek API → 写 SQLite
   │
   └─ AI 工具 (Claude Code / Hermes / Codex)  ←── 模式B: 翻译层
       /paper-database venue init
@@ -68,19 +68,36 @@ DBLP XML 导出 URL 模式:
 
 可以添加多个 topic。`keywords` 用于构造分类 prompt。`output.columns` 定义 CSV 导出列和转换规则。
 
-### `config/classifier.yaml` — CLI 工具 + prompt
+### `config/classifier.yaml` — DeepSeek API 配置
 
-切换 LLM 工具:
 ```yaml
-# Claude
 classifier:
-  tool: claude
-  cli_args: ["-p", "{prompt}", "--output-format", "json", "--max-tokens", "500"]
+  provider: deepseek
+  api_base_url: "https://api.deepseek.com"
+  model: "deepseek-v4-pro"
 
-# Ollama
-classifier:
-  tool: ollama
-  cli_args: ["run", "llama3", "{prompt}"]
+  # Generation parameters
+  max_tokens: 500
+  temperature: 0.0
+  enable_thinking: false              # 开启后输出思维链推理
+
+  # Concurrency
+  max_concurrency: 32
+
+  # Retry / resilience
+  timeout: 60
+  max_retries: 3
+  strip_markdown_fence: true
+
+  prompt_template: |
+    你是计算机体系结构领域的论文分析专家。
+    ...
+```
+
+默认模型 `deepseek-v4-pro` 是 DeepSeek 统一旗舰模型，同时支持标准对话和思维链推理。
+设置 `enable_thinking: true` 可开启思考模式。
+
+并发数: `max_concurrency` 控制同时调用 API 的论文数，默认 32。可根据 API 速率限制调整。
 ```
 
 ## CLI 命令清单
@@ -126,6 +143,19 @@ cd /path/to/AI-config
 ./setup.sh                        # 自动发现所有 AI 工具
 ./setup.sh ~/.claude/skills       # 手动指定目录
 ```
+
+## DeepSeek API Key
+
+分类使用 DeepSeek API，需设置环境变量:
+
+```bash
+export DEEPSEEK_API_KEY="sk-your-api-key"
+```
+
+- 获取 API Key: https://platform.deepseek.com/api_keys
+- API 文档: https://api-docs.deepseek.com/
+- 默认模型 `deepseek-v4-pro`，可在 `config/classifier.yaml` 中切换
+- 设置 `enable_thinking: true` 可开启思维链推理模式
 
 ## Semantic Scholar API Key
 
