@@ -18,7 +18,7 @@ classifier:
       api_base_url: "https://api.deepseek.com"
       api_key: "{env:DEEPSEEK_API_KEY}"
       model: "deepseek-v4-pro"
-      max_tokens: 800
+      max_tokens: 1000
       temperature: 0.0
       enable_thinking: true
       max_concurrency: 32
@@ -27,7 +27,7 @@ classifier:
       api_base_url: "http://localhost:8800"
       api_key: "tb-25b6aeaef5478bb1563e328ccfb71016"
       model: "minimax-m27"
-      max_tokens: 800
+      max_tokens: 1000
       temperature: 0.0
       enable_thinking: false
       max_concurrency: 256
@@ -37,6 +37,6 @@ classifier:
   max_concurrency: 32
 
   # Retry / resilience
-  timeout: 60
+  timeout: 150
   max_retries: 3
   strip_markdown_fence: true
