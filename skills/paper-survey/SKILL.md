@@ -210,6 +210,33 @@ classifier:
 
 `api_key` 支持 `{env:VAR_NAME}` 占位符，运行时自动读取环境变量。
 
+## 输出字段配置约定（只改 YAML，不改代码）
+
+`topics.yaml` 中的 `prompt_template` 和 `output.columns` 遵循统一约定：
+
+### 字段分类
+
+| 字段类型 | 存储位置 | configuration |
+|---------|---------|--------------|
+| `priority`, `reason`, `confidence` | `survey_result` 表列（`is_relevant`, `relevance_reason`, `confidence`） | 无需在 `output.columns` 中声明即可使用 |
+| 其他所有字段（如 `research_object`, `algorithm` 等） | `survey_result.analysis_json`（模型的原始 JSON 输出） | 需在 `prompt_template` JSON 输出区和 `output.columns` 中同时出现 |
+
+### 新增一个输出字段只需 2 步：
+
+1. 在 `prompt_template` 的 JSON 输出区添加该字段
+2. 在 `output.columns` 中添加对应列，`field` 名与 JSON key 一致
+3. 完成。**无需改任何 Python 代码。**
+
+### 命名约定
+
+- `venue_*` 前缀 → 直接读取 `venue` 表列（如 `venue_name`, `venue_ccf_rank`, `venue_type`）
+- `paper_*` 前缀 → 直接读取 `paper` 表列（如 `paper_title`, `paper_year`, `paper_doi`, `paper_authors`）
+- 无前缀 → 先查 `survey_result` 表列（SQL 别名），再查 `analysis_json`
+
+### 不必要的字段不要放进 prompt
+
+模型输出的 JSON 字段应与 `output.columns` 对应。不需要导出的字段不要放在 `prompt_template` 的 JSON 输出中（浪费 token）。例如当前 survey 的 output 不含 `confidence`，所以 prompt 也不要求模型输出 `confidence`。
+
 ## 技术要点
 
 - **分类实现**：通过 `httpx.AsyncClient` 并发调用 LLM API（provider 由 `config/classifier.yaml` 配置），采用 Claim-based Queue + Worker 模式：feeder 原子 claim 未分类论文 → 放入队列 → worker 分类后标记为 classified，杜绝重复分类

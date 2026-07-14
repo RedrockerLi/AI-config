@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Callable
 
 import httpx
@@ -25,11 +25,7 @@ class ClassificationResult:
     priority: str = ""             # "S" / "A" / "B" / "" ("" = not relevant)
     reason: str = ""
     confidence: float = 0.0
-    # Structured extraction fields
-    research_object: str = ""      # 研究对象
-    problem_goal: str = ""         # 问题/目标
-    method_innovation: str = ""    # 方法/创新
-    algorithm: str = ""            # 调度算法
+    extra: dict = field(default_factory=dict)  # all other JSON fields from model
 
     @property
     def is_relevant(self) -> bool:
@@ -172,17 +168,8 @@ class DeepSeekClassifier:
 
                     # ── Save result + mark paper classified ─────
                     analysis_json = ""
-                    if result.is_relevant and any([
-                        result.research_object, result.problem_goal,
-                        result.method_innovation, result.algorithm,
-                    ]):
-                        analysis_json = json.dumps({
-                            "priority": result.priority,
-                            "research_object": result.research_object,
-                            "problem_goal": result.problem_goal,
-                            "method_innovation": result.method_innovation,
-                            "algorithm": result.algorithm,
-                        }, ensure_ascii=False)
+                    if result.extra:
+                        analysis_json = json.dumps(result.extra, ensure_ascii=False)
                     db.mark_result(
                         row.get("result_id", 0),
                         is_relevant=result.priority,
@@ -357,12 +344,20 @@ class DeepSeekClassifier:
         if priority not in ("S", "A", "B"):
             priority = ""
 
+        # Standard fields stored in survey_result columns
+        reason = str(data.get("reason", ""))
+        confidence = float(data.get("confidence", 0.5))
+
+        # Everything else from the model JSON → stored in analysis_json,
+        # automatically available for export via output.columns
+        extra: dict = {}
+        for k, v in data.items():
+            if k not in ("priority", "reason", "confidence"):
+                extra[k] = str(v) if v else ""
+
         return ClassificationResult(
             priority=priority,
-            reason=str(data.get("reason", "")),
-            confidence=float(data.get("confidence", 0.5)),
-            research_object=str(data.get("research_object", "")),
-            problem_goal=str(data.get("problem_goal", "")),
-            method_innovation=str(data.get("method_innovation", "")),
-            algorithm=str(data.get("algorithm", "")),
+            reason=reason,
+            confidence=confidence,
+            extra=extra,
         )

@@ -666,11 +666,16 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export):
     )
 
     def progress_callback(done, _total, title, result):
-        algo = f" [{result.algorithm}]" if result.algorithm else ""
+        # Show first extra field value as hint (e.g. algorithm name)
+        hint = ""
+        if result.extra:
+            first_val = next((v for v in result.extra.values() if v), "")
+            if first_val:
+                hint = f" [{first_val[:40]}]"
         if result.priority == "S":
-            status = f"[green]S{algo}[/]"
+            status = f"[green]S{hint}[/]"
         elif result.priority == "A":
-            status = f"[yellow]A{algo}[/]"
+            status = f"[yellow]A{hint}[/]"
         elif result.priority == "B":
             status = f"[dim]B[/]"
         else:
