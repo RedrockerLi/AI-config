@@ -156,32 +156,29 @@ class DeepSeekClassifier:
                             if retry < 2:
                                 await asyncio.sleep(2 ** (retry + 1))
                     if result is None:
-                        result = ClassificationResult(
-                            priority="",
-                            reason=f"[API error after 3 retries] {last_error}",
-                            confidence=0.0,
-                        )
-                    else:
-                        # ── Save immediately ────────────────────
-                        analysis_json = ""
-                        if result.is_relevant and any([
-                            result.research_object, result.problem_goal,
-                            result.method_innovation, result.algorithm,
-                        ]):
-                            analysis_json = json.dumps({
-                                "priority": result.priority,
-                                "research_object": result.research_object,
-                                "problem_goal": result.problem_goal,
-                                "method_innovation": result.method_innovation,
-                                "algorithm": result.algorithm,
-                            }, ensure_ascii=False)
-                        db.mark_result(
-                            row.get("result_id", 0),
-                            is_relevant=result.priority,
-                            reason=result.reason,
-                            confidence=result.confidence,
-                            analysis_json=analysis_json,
-                        )
+                        # All retries failed — silently skip, retry next run
+                        continue
+
+                    # ── Save immediately ────────────────────────
+                    analysis_json = ""
+                    if result.is_relevant and any([
+                        result.research_object, result.problem_goal,
+                        result.method_innovation, result.algorithm,
+                    ]):
+                        analysis_json = json.dumps({
+                            "priority": result.priority,
+                            "research_object": result.research_object,
+                            "problem_goal": result.problem_goal,
+                            "method_innovation": result.method_innovation,
+                            "algorithm": result.algorithm,
+                        }, ensure_ascii=False)
+                    db.mark_result(
+                        row.get("result_id", 0),
+                        is_relevant=result.priority,
+                        reason=result.reason,
+                        confidence=result.confidence,
+                        analysis_json=analysis_json,
+                    )
 
                     # ── Progress ─────────────────────────────────
                     async with lock:

@@ -167,6 +167,7 @@ class Database:
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
+            self._conn.execute("PRAGMA busy_timeout=30000")  # 30s — 高并发写入不丢
         return self._conn
 
     def close(self):
@@ -656,8 +657,7 @@ class Database:
         ).fetchone()
         classified_row = self.conn.execute(
             """SELECT COUNT(*) as cnt FROM survey_result
-               WHERE survey_id = ? AND is_relevant IS NOT NULL
-               AND is_relevant != ''""",
+               WHERE survey_id = ? AND is_relevant IS NOT NULL""",
             (survey_id,),
         ).fetchone()
         s_row = self.conn.execute(
