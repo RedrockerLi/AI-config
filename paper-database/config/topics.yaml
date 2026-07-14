@@ -15,82 +15,192 @@ topics:
 
       你的任务是判断一篇论文是否应被收录到"Scheduling（调度）相关论文"文献调研中。
 
-      筛选原则：**宁可多收录，不可漏掉。**
-      只要调度是论文的核心贡献之一，或者是论文提出的关键技术之一，即使不是唯一贡献，也应判定为相关。
+      筛选原则：
+
+      **宁可多收录，不可漏掉。**
+
+      只要调度（Scheduling）是论文的核心贡献之一，或者是论文提出的关键技术之一，即使不是唯一贡献，也应判定为相关。
+
+      注意：
+
+      **论文所属平台（CPU、GPU、CGRA、Accelerator、PIM、FPGA 等）不能作为收录依据。**
+
+      判断流程必须遵循：
+
+      1. 先判断论文是否属于调度研究；
+      2. 只有属于调度研究时，再进行分类。
 
       =========================
       论文信息
       =========================
 
-      论文标题: {title}
-      论文摘要: {abstract}
+      论文标题：
+      {title}
+
+      论文摘要：
+      {abstract}
 
       =========================
       调度的定义（按行为判断，而非关键词）
       =========================
 
-      调度（Scheduling）是指在存在多个待执行对象和有限计算资源的条件下，根据一定策略决定对象在何时（When）、何处（Where）、以何种顺序（In What Order）获得资源并执行，以优化系统性能、资源利用率、能耗或其他目标。
+      调度（Scheduling）是指：
 
-      请根据论文实际行为进行判断，不要仅依据是否出现 "schedule"、"scheduler" 等关键词。
+      在存在多个待执行对象和有限计算资源的条件下，根据一定策略决定对象在何时（When）、何处（Where）、以何种顺序（In What Order）获得资源并执行，以优化性能、吞吐率、资源利用率、能耗、延迟等目标。
 
-      如果论文提出一种新机制，其本质是在多个候选对象之间决定：
-      执行顺序、服务顺序、优先级、资源分配、请求仲裁、工作映射（Mapping）、工作迁移（Migration）、负载均衡（Load Balancing）
-      也应认为属于广义调度。
+      不要仅依据是否出现 "schedule"、"scheduler" 等关键词判断。
+
+      如果论文提出的新机制本质上是在多个候选对象之间决定：
+
+      - 执行顺序（Execution Order）
+      - 服务顺序（Service Order）
+      - 优先级（Priority）
+      - 资源分配（Resource Allocation）
+      - 请求仲裁（Arbitration）
+      - Mapping
+      - Placement
+      - Migration
+      - Load Balancing
+
+      均应认为属于广义调度。
 
       =========================
       不属于调度
       =========================
 
-      - 调度仅作为已有模块被调用，而非论文创新点
-      - 论文核心贡献是：电路设计、制造工艺、器件、编码压缩、加密安全、ISA设计、功耗建模、可靠性分析、测试验证等，与调度无直接关系
-      - 调度只是背景介绍、实验环境或已有系统的一部分
+      以下情况不要收录：
 
-      =========================
-      不属于调度 → priority = null
-      =========================
+      - 调度只是已有系统的一部分，并非论文创新；
+      - 调度仅作为实验环境或背景介绍；
+      - Mapping / Scheduling / Resource Allocation 并非论文主要贡献；
+      - 论文核心贡献是：
+        - 电路设计
+        - 微结构设计
+        - PE设计
+        - Cache设计
+        - NoC设计
+        - 数据流设计
+        - ISA设计
+        - 编码压缩
+        - 制造工艺
+        - 功耗分析
+        - 可靠性
+        - 测试验证
+        等，而没有提出新的调度策略。
 
-      - 调度仅作为已有模块被调用，而非论文创新点
-      - 论文核心贡献是：电路设计、制造工艺、器件、编码压缩、加密安全、ISA设计、功耗建模、可靠性分析、测试验证等，与调度无直接关系
-      - 调度只是背景介绍、实验环境或已有系统的一部分
+      注意：
 
-      =========================
-      优先级分级（S / A / B）
-      =========================
+      即使论文研究对象是：
 
-      研究兴趣：粗粒度可重构架构（CGRAs）、数据流架构、空间架构上的调度。
-
-      S（Strong Match）— 与研究方向高度相关，必须精读：
-      - CGRA（Coarse-Grained Reconfigurable Architecture）
-      - Dataflow Architecture
-      - Spatial Architecture
-      - Mapping + Scheduling
-      - Operation Scheduling
-      - PE Scheduling
-      - Runtime Scheduling for CGRA/Dataflow
-      → 直接 Related Work，必须深入分析。
-
-      A（Architecture Scheduling）— 与体系结构调度相关，值得阅读：
+      - CPU
       - GPU
+      - CGRA
+      - FPGA
       - Accelerator
-      - PIM / Near-Memory Computing
-      - Memory Scheduling
-      - NoC Scheduling
-      - Instruction Scheduling
-      - Multicore Scheduling
-      - Compiler Scheduling（Architecture-Oriented）
-      → 可能借鉴思想，与研究方向有交叉。
+      - PIM
+      - HBM
+      - CXL
 
-      B（General Scheduling）— 调度相关但与体系结构联系较弱：
-      - Operating System
-      - Cloud Computing
-      - Distributed Systems
+      如果没有新的调度机制，也不要收录。
+
+      =========================
+      Level 分类
+      =========================
+
+      若属于调度论文，请判断论文所属层级。
+
+      Level 必须且只能选择以下两个值之一：
+
+      - Architecture
+      - System
+
+      判断原则：
+
+      Architecture：
+
+      调度发生在计算机体系结构内部，例如：
+
+      CPU、GPU、CGRA、Spatial Architecture、Accelerator、FPGA、Memory、Cache、NoC、PIM、HBM、CXL 等。
+
+      System：
+
+      调度对象属于系统层，例如：
+
+      Cluster、Cloud、Datacenter、Operating System、Workflow、Database、Storage、Distributed System、Container、VM、Server Resource Management 等。
+
+      =========================
+      Platform 分类
+      =========================
+
+      Platform 必须从规定的枚举中选择，不得自行创造新的类别。
+
+      若 Level = Architecture，
+
+      Platform 必须且只能选择：
+
+      - CPU-SingleCore
+      - CPU-Multicore
+      - GPU
+      - CGRA/Spatial
+      - Heterogeneous
+      - Other
+
+      分类原则：
+
+      CPU-SingleCore：
+      单核 CPU 内部调度。
+
+      CPU-Multicore：
+      多核 CPU、Manycore、NUMA 等。
+
+      GPU：
+      GPU 内部各种调度。
+
+      CGRA/Spatial：
+      PE Array、CGRA、Spatial Architecture、Dataflow Architecture，以及其它以空间计算为核心的平台。
+
+      Heterogeneous：
+      涉及两个及以上不同计算平台，例如 CPU+GPU、GPU+PIM、CPU+FPGA、CPU+CGRA 等。
+
+      Other：
+      其它体系结构层面的调度，例如 Memory、Cache、NoC、HBM、CXL、PIM（非异构）等。
+
+      若 Level = System，
+
+      Platform 必须且只能选择：
+
+      - OperatingSystem
+      - Cloud
+      - Cluster
+      - DistributedSystem
       - Database
       - Storage
-      - Network Services
       - Workflow
-      - Real-time Systems
-      - 其他与体系结构联系较弱的调度研究
-      → 除非特别经典，否则可以不看。
+      - Network
+      - Other
+
+      应选择论文主要关注的系统平台。
+
+      =========================
+      Remark
+      =========================
+
+      Remark 用于补充论文最值得记录的信息，便于后续人工阅读和筛选。
+
+      要求：
+
+      - 写完整句子；
+      - 不要重复 Level，Platform，problem_goal，method_innovation，algorithm
+      - 优先记录论文的重要信息。
+
+      Remark 可包括但不限于：
+
+      - 调度对象或关键模块；
+      - 异构平台组成；
+      - 特殊硬件或平台特点；
+      - 目标应用或应用领域。
+
+      对于涉及定制化加速器的论文，应优先说明该加速器主要面向的目标应用（如 CNN、Transformer、LLM、GNN、Graph Processing 等），而不仅仅描述其硬件平台。
 
       =========================
       输出要求
@@ -99,15 +209,16 @@ topics:
       输出 JSON，不要输出任何解释文字。
 
       {{
-        "priority": "S",
+        "level": "Architecture",
+        "platform": "CGRA/Spatial",
         "reason": "判断理由（80字以内）",
-        "research_object": "论文研究对象（英文缩写优先，如GPU、SM、LLC、NoC、DRAM Controller、CGRA等）",
         "problem_goal": "论文希望解决的问题，或者论文想达成的目标（中文，不要留空）",
         "method_innovation": "论文提出的方法，或者和其他方法相比的创新（中文，不要留空）",
         "algorithm": "算法名称+描述其策略（中文，不要留空）"
+        "remark": "CNN",
       }}
 
-      不属于调度的论文设置 priority 为空字符串（即 ""）。
+      不属于调度的论文设置 level 为空字符串（即 ""）。
 
     output:
       format: csv
@@ -128,15 +239,12 @@ topics:
         - field: paper_doi
           header: "链接"
           width: 30
-        - field: priority
-          header: "优先级"
-          width: 8
-        - field: reason
-          header: "判断理由"
-          width: 40
-        - field: research_object
-          header: "研究对象"
-          width: 20
+        - field: level
+          header: "Level"
+          width: 14
+        - field: platform
+          header: "Platform"
+          width: 16
         - field: problem_goal
           header: "问题/目标"
           width: 50
@@ -146,6 +254,12 @@ topics:
         - field: algorithm
           header: "调度算法"
           width: 20
+        - field: remark
+          header: "Remark"
+          width: 20
+        - field: reason
+          header: "判断理由"
+          width: 40
 
   # ── 示例: 添加更多主题 ──────────────────────────────────────
   # - key: power

@@ -118,10 +118,12 @@ python -m paper_database survey stats --survey-id X
 python -m paper_database survey delete --survey-id X
 
 # Classify
-python -m paper_database survey classify -s X [--dry-run] [--limit N] [--start N]
+python -m paper_database survey classify -s X [--dry-run] [--limit N] [--no-export]
 
 # Export
-python -m paper_database survey preview --survey-id Xpython -m paper_database survey export --survey-id X [-o path/to/output.csv]```
+python -m paper_database survey preview --survey-id X
+python -m paper_database survey export --survey-id X [-o path/to/output.csv]
+```
 
 ## AI Skills
 

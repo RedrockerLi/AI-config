@@ -106,12 +106,17 @@ class DeepSeekClassifier:
         try:
             # ── dry-run: just print prompts ────────────────────
             if dry_run:
+                fed = 0
                 while True:
-                    rows = db.claim_papers(survey_id, limit=2000)
+                    want = 2000
+                    if limit:
+                        want = min(want, limit - fed)
+                    rows = db.claim_papers(survey_id, limit=want)
                     if not rows:
                         break
                     for row in rows:
                         total += 1
+                        fed += 1
                         paper = PaperMeta(
                             title=row["title"], year=row["year"],
                             authors=json.loads(row["authors"]),
@@ -124,21 +129,21 @@ class DeepSeekClassifier:
                         print(f"Venue: {row.get('venue_name','')} ({row['year']})")
                         print(f"Prompt:\n{prompt}")
                         print(f"{'='*60}")
-                        if limit and total >= limit:
-                            return
                         # Release claim for dry-run (reset to unclaimed)
                         db.conn.execute(
                             "UPDATE paper SET flag = 'unclaimed' WHERE id = ?",
                             (row["paper_id"],),
                         )
                         db.conn.commit()
+                        if limit and fed >= limit:
+                            break
+                    if limit and fed >= limit:
+                        break
                 return
 
             # ── Queue + Workers ─────────────────────────────────
             queue: asyncio.Queue = asyncio.Queue(maxsize=max_inflight)
-            done = asyncio.Event()
             lock = asyncio.Lock()
-            all_claimed = asyncio.Event()  # set when no more papers to claim
 
             async def _worker():
                 """Pull paper from queue, classify, save, mark classified."""
@@ -180,27 +185,25 @@ class DeepSeekClassifier:
                         total += 1
                         if progress_callback:
                             progress_callback(total, 0, paper.title, result)
-                        if limit and total >= limit:
-                            done.set()
 
                     queue.task_done()
 
             # ── Feeder: claim papers on demand, push to queue ────
             async def _feeder():
-                while not done.is_set():
-                    # Don't claim more than queue can hold
+                fed = 0
+                while True:
                     room = max_inflight - queue.qsize()
                     if room <= 0:
                         await asyncio.sleep(0.05)
                         continue
-
-                    batch = min(room, 500)  # claim at most 500 at a time
-                    rows = db.claim_papers(survey_id, batch)
-                    if not rows:
-                        # No more unclaimed papers — feed what's left,
-                        # then send sentinels
+                    want = min(room, 500)
+                    if limit:
+                        want = min(want, limit - fed)
+                    if want <= 0:
                         break
-
+                    rows = db.claim_papers(survey_id, want)
+                    if not rows:
+                        break
                     for row in rows:
                         paper = PaperMeta(
                             title=row["title"], year=row["year"],
@@ -212,8 +215,9 @@ class DeepSeekClassifier:
                             citation_count=row.get("citation_count", 0),
                         )
                         await queue.put((paper, dict(row)))
-                        if done.is_set():
-                            return
+                        fed += 1
+                        if limit and fed >= limit:
+                            break
 
                 # All papers claimed — send sentinels to workers
                 await queue.put(None)
