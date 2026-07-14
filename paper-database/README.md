@@ -20,8 +20,8 @@ python -m paper_database survey create --topic scheduling --name "测试调研"
 # 5. 先 dry-run 检查 prompt
 python -m paper_database survey classify -s 1 --dry-run --limit 3
 
-# 6. 正式分类 (--fetch-abstracts 自动补摘要，可选)
-python -m paper_database survey classify -s 1 --limit 10 --fetch-abstracts
+# 6. 正式分类
+python -m paper_database survey classify -s 1 --limit 10
 
 # 7. 预览 + 导出
 python -m paper_database survey preview -s 1 --relevant-only
@@ -120,7 +120,7 @@ python -m paper_database survey stats --survey-id X
 python -m paper_database survey delete --survey-id X
 
 # Classify
-python -m paper_database survey classify -s X [--dry-run] [--limit N] [--start N] [--fetch-abstracts]
+python -m paper_database survey classify -s X [--dry-run] [--limit N] [--start N]
 
 # Export
 python -m paper_database survey preview --survey-id X [--relevant-only]
@@ -182,8 +182,6 @@ export OPENALEX_API_KEY="your-key"
 
 DOI-only 跳过昂贵的标题搜索，只跑批量 DOI 查询。对于大部分有 DOI 的论文
 （DBLP 覆盖率 >99%），一次 `--doi-only` 就能用极低成本获取几乎全部摘要。
-
-`survey classify --fetch-abstracts` 默认使用 DOI-only 模式。
 
 ## 数据库
 

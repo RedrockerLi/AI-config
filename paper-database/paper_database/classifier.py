@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import threading
 from dataclasses import dataclass
 from typing import Optional, Callable
 
@@ -78,54 +77,6 @@ class DeepSeekClassifier:
         output = await self._call_api(prompt)
         return self._parse_response(output)
 
-    async def classify_batch(
-        self,
-        papers: list[PaperMeta],
-        topic: TopicConfig,
-        progress_callback: Optional[Callable] = None,
-        save_callback: Optional[Callable] = None,
-    ) -> list[ClassificationResult]:
-        """Classify multiple papers concurrently (bounded by semaphore).
-
-        If ``save_callback`` is provided, it is called for each paper
-        immediately after classification completes (survives Ctrl+C).
-        """
-        completed = 0
-        total = len(papers)
-        lock = asyncio.Lock()
-
-        async def _process_one(paper: PaperMeta) -> ClassificationResult:
-            nonlocal completed
-            last_error = None
-            result = None
-            for retry in range(3):
-                try:
-                    async with self._sem:
-                        result = await self.classify_single(paper, topic)
-                    break
-                except Exception as e:
-                    last_error = e
-                    if retry < 2:
-                        wait = 2 ** (retry + 1)  # 2s, 4s
-                        await asyncio.sleep(wait)
-            if result is None:
-                result = ClassificationResult(
-                    priority="",
-                    reason=f"[API error after 3 retries] {last_error}",
-                    confidence=0.0,
-                )
-            else:
-                if save_callback:
-                    save_callback(paper, result)
-            async with lock:
-                completed += 1
-                if progress_callback:
-                    progress_callback(completed, total, paper.title, result)
-            return result
-
-        tasks = [_process_one(p) for p in papers]
-        return await asyncio.gather(*tasks)
-
     async def run_survey(
         self,
         db: Database,
@@ -135,198 +86,141 @@ class DeepSeekClassifier:
         limit: Optional[int] = None,
         start: int = 1,
         progress_callback: Optional[Callable] = None,
-        abstract_fetcher=None,
-        papers_db: Optional[Database] = None,
     ):
         """Run classification for all unclassified papers in a survey.
 
-        Args:
-            db: Survey Database instance (classification results).
-            survey_id: Survey ID to process.
-            topic: Topic configuration.
-            dry_run: If True, print prompts without calling API.
-            limit: Max papers to classify (None = all).
-            start: Skip first (start-1) papers (for resume).
-            progress_callback: Called after each classification.
-            abstract_fetcher: Optional AbstractFetcher.
-            papers_db: Main papers Database (for reading/writing abstracts).
-                Defaults to ``db`` if not provided.
+        Queue + Worker pattern: feeder loads papers from DB into a queue,
+        N workers pull and classify concurrently.  Semaphore is NOT used —
+        concurrency is controlled by the number of workers (= max_concurrency).
+        All slots stay busy, no batch-boundary idle time.
         """
-        batch_size = 50
-        total_processed = 0
+        total = 0
         skipped = 0
-
-        _abstract_db = papers_db or db
-
-        # ── Background thread: fetch ALL missing abstracts ──────
-        if abstract_fetcher is not None and papers_db is not None:
-            all_rows = papers_db.get_papers_without_abstract(limit=999999)
-            if all_rows:
-                all_missing = [
-                    PaperMeta(
-                        title=r["title"], year=r["year"],
-                        authors=json.loads(r.get("authors", "[]")),
-                        dblp_key=r["dblp_key"],
-                        doi=r.get("doi", "") or "",
-                        abstract=r.get("abstract", "") or "",
-                    )
-                    for r in all_rows
-                ]
-                bg_db_path = papers_db.db_path
-                print(
-                    f"  [后台] 启动摘要预取线程 ({len(all_missing)} 篇, "
-                    f"{sum(1 for p in all_missing if p.doi.strip())} 有 DOI)..."
-                )
-
-                def _fetch_all():
-                    bg_db = Database(bg_db_path)
-                    bg_db.init_db()
-                    abstract_fetcher.fetch_abstracts_batch(
-                        all_missing, db=bg_db, doi_only=True,
-                    )
-
-                threading.Thread(target=_fetch_all, daemon=True).start()
+        n = self.max_concurrency
 
         try:
-            while True:
-                rows = db.get_unclassified(survey_id, limit=batch_size)
-                if not rows:
-                    break
-
-                # Build paper list for this batch, applying resume offset
-                papers: list[PaperMeta] = []
-                row_index: dict[str, dict] = {}  # dblp_key → DB row
-
-                for row in rows:
-                    skipped += 1
-                    if skipped < start:
-                        continue
-
-                    paper = PaperMeta(
-                        title=row["title"],
-                        year=row["year"],
-                        authors=json.loads(row["authors"]),
-                        dblp_key=row["dblp_key"],
-                        doi=row.get("doi", "") or "",
-                        venue=row.get("venue_key", ""),
-                        abstract=row.get("abstract", "") or "",
-                        citation_count=row.get("citation_count", 0),
-                    )
-                    papers.append(paper)
-                    row_index[paper.dblp_key] = row
-
-                if not papers:
-                    # All rows in this batch were skipped — keep going
-                    if len(rows) < batch_size:
+            # ── dry-run: just print prompts ────────────────────
+            if dry_run:
+                while True:
+                    rows = db.get_unclassified(survey_id, limit=2000)
+                    if not rows:
                         break
-                    continue
-
-                if dry_run:
-                    for paper in papers:
-                        total_processed += 1
+                    for row in rows:
+                        skipped += 1
+                        if skipped < start:
+                            continue
+                        total += 1
+                        paper = PaperMeta(
+                            title=row["title"], year=row["year"],
+                            authors=json.loads(row["authors"]),
+                            dblp_key=row["dblp_key"],
+                            abstract=row.get("abstract", "") or "",
+                        )
                         prompt = self._build_prompt(paper, topic)
                         print(f"\n{'='*60}")
                         print(f"[DRY RUN] Paper: {paper.title[:80]}...")
-                        print(
-                            f"Venue: {row_index[paper.dblp_key].get('venue_name','')}"
-                            f" ({paper.year})"
-                        )
+                        print(f"Venue: {row.get('venue_name','')} ({row['year']})")
                         print(f"Prompt:\n{prompt}")
                         print(f"{'='*60}")
-                        if limit and total_processed >= limit:
+                        if limit and total >= limit:
                             return
-                    continue
+                return
 
-                # ── Check papers_db for existing abstracts ─────────
-                # survey DB 的 paper 表是快照，需查主库确认是否有摘要
-                if _abstract_db is not db:
-                    for paper in papers:
-                        if not paper.abstract.strip():
-                            existing = _abstract_db.get_paper_abstract(paper.dblp_key)
-                            if existing:
-                                paper.abstract = existing
+            # ── Queue + Workers ─────────────────────────────────
+            queue: asyncio.Queue = asyncio.Queue(maxsize=n * 4)
+            done = asyncio.Event()
+            lock = asyncio.Lock()
 
-                # ── 逐篇保存回调 ──────────────────────────────────
-                def _save(paper: PaperMeta, result: ClassificationResult):
-                    row = row_index.get(paper.dblp_key, {})
-                    analysis_json = ""
-                    if result.is_relevant and any([
-                        result.research_object, result.problem_goal,
-                        result.method_innovation, result.algorithm,
-                    ]):
-                        analysis_json = json.dumps({
-                            "priority": result.priority,
-                            "research_object": result.research_object,
-                            "problem_goal": result.problem_goal,
-                            "method_innovation": result.method_innovation,
-                            "algorithm": result.algorithm,
-                        }, ensure_ascii=False)
-                    db.mark_result(
-                        row.get("result_id", 0),
-                        is_relevant=result.priority,
-                        reason=result.reason,
-                        confidence=result.confidence,
-                        analysis_json=analysis_json,
-                    )
+            async def _worker():
+                """Pull paper from queue, classify, save, repeat."""
+                while True:
+                    item = await queue.get()
+                    if item is None:          # sentinel — pass to next worker
+                        await queue.put(None)
+                        break
 
-                # ── Split ready / missing ──────────────────────────
-                ready = [p for p in papers if p.abstract.strip()]
-                missing = [p for p in papers if not p.abstract.strip()]
-                batch_done = 0
+                    paper, row = item
 
-                # Classify papers that have abstracts
-                if ready:
-                    await self.classify_batch(
-                        ready, topic,
-                        progress_callback=progress_callback,
-                        save_callback=_save,
-                    )
-                    batch_done += len(ready)
-
-                # Missing papers
-                if missing:
-                    if abstract_fetcher is not None:
-                        # Give background thread a chance to write abstracts
-                        await asyncio.sleep(1.0)
-                        for paper in missing:
-                            abstract = _abstract_db.get_paper_abstract(paper.dblp_key)
-                            if abstract:
-                                paper.abstract = abstract
-                        retry_ready = [p for p in missing if p.abstract.strip()]
-                        if retry_ready:
-                            await self.classify_batch(
-                                retry_ready, topic,
-                                progress_callback=progress_callback,
-                                save_callback=_save,
-                            )
-                            batch_done += len(retry_ready)
-                        # Still-missing papers: skip (is_relevant stays NULL → retry next batch)
-                    else:
-                        # No abstract fetcher: classify as-is (标题判断)
-                        await self.classify_batch(
-                            missing, topic,
-                            progress_callback=progress_callback,
-                            save_callback=_save,
+                    # ── Classify (with immediate retry) ─────────
+                    result = None
+                    last_error = None
+                    for retry in range(3):
+                        try:
+                            result = await self.classify_single(paper, topic)
+                            break
+                        except Exception as e:
+                            last_error = e
+                            if retry < 2:
+                                await asyncio.sleep(2 ** (retry + 1))
+                    if result is None:
+                        result = ClassificationResult(
+                            priority="",
+                            reason=f"[API error after 3 retries] {last_error}",
+                            confidence=0.0,
                         )
-                        batch_done += len(missing)
+                    else:
+                        # ── Save immediately ────────────────────
+                        analysis_json = ""
+                        if result.is_relevant and any([
+                            result.research_object, result.problem_goal,
+                            result.method_innovation, result.algorithm,
+                        ]):
+                            analysis_json = json.dumps({
+                                "priority": result.priority,
+                                "research_object": result.research_object,
+                                "problem_goal": result.problem_goal,
+                                "method_innovation": result.method_innovation,
+                                "algorithm": result.algorithm,
+                            }, ensure_ascii=False)
+                        db.mark_result(
+                            row.get("result_id", 0),
+                            is_relevant=result.priority,
+                            reason=result.reason,
+                            confidence=result.confidence,
+                            analysis_json=analysis_json,
+                        )
 
-                total_processed += batch_done
+                    # ── Progress ─────────────────────────────────
+                    async with lock:
+                        nonlocal total
+                        total += 1
+                        if progress_callback:
+                            progress_callback(total, 0, paper.title, result)
+                        if limit and total >= limit:
+                            done.set()
 
-                # Stall detection: if nothing got classified this batch,
-                # the background thread may have finished or we have no
-                # abstracts for the remaining papers — stop.
-                if batch_done == 0:
-                    print(
-                        "  [classify] 本批 0 篇可分类（等待摘要后台线程），"
-                        "停止。重新运行可接续。"
-                    )
-                    break
+            # ── Feeder: load from DB, push to queue ─────────────
+            async def _feeder():
+                nonlocal skipped
+                while True:
+                    rows = db.get_unclassified(survey_id, limit=2000)
+                    if not rows:
+                        break
+                    for row in rows:
+                        skipped += 1
+                        if skipped < start:
+                            continue
+                        paper = PaperMeta(
+                            title=row["title"], year=row["year"],
+                            authors=json.loads(row["authors"]),
+                            dblp_key=row["dblp_key"],
+                            doi=row.get("doi", "") or "",
+                            venue=row.get("venue_key", ""),
+                            abstract=row.get("abstract", "") or "",
+                            citation_count=row.get("citation_count", 0),
+                        )
+                        await queue.put((paper, dict(row)))
+                        if done.is_set():
+                            return
+                # All rows loaded — send sentinels to workers
+                await queue.put(None)
 
-                if limit and total_processed >= limit:
-                    return
+            # ── Launch feeder + workers concurrently ────────────
+            workers = [asyncio.create_task(_worker()) for _ in range(n)]
+            feeder = asyncio.create_task(_feeder())
+            await feeder
+            await asyncio.gather(*workers)
 
-                if len(rows) < batch_size:
-                    break
         finally:
             await self._client.aclose()
 

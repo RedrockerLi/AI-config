@@ -635,11 +635,9 @@ def survey_reset(ctx, survey_id):
 @click.option("--limit", "-l", type=int, default=None, help="最大分类数量")
 @click.option("--start", type=int, default=1, help="从第 N 篇开始 (断点续传)")
 @click.option("--no-export", is_flag=True, default=False, help="不自动导出 CSV")
-@click.option("--fetch-abstracts", is_flag=True, default=False,
-              help="分类时自动补全缺失的摘要 (通过 OpenAlex)")
 @click.pass_context
-def survey_classify(ctx, survey_id, dry_run, limit, start, no_export, fetch_abstracts):
-    """运行分类 (DeepSeek API 并发), 完成后自动导出 CSV."""
+def survey_classify(ctx, survey_id, dry_run, limit, start, no_export):
+    """运行分类 (LLM API 并发), 完成后自动导出 CSV."""
     config = _resolve_config(ctx.obj["config_dir"])
     survey_db = _get_survey_db(survey_id, ctx.obj["config_dir"])
 
@@ -665,20 +663,6 @@ def survey_classify(ctx, survey_id, dry_run, limit, start, no_export, fetch_abst
         f"Concurrency: {config.classifier.max_concurrency}[/]"
     )
 
-    # Main papers DB for reading/writing abstracts (not survey snapshot)
-    papers_db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
-
-    # Build abstract fetcher (only when --fetch-abstracts, not dry-run)
-    oa_fetcher = None
-    if fetch_abstracts and not dry_run:
-        oa_fetcher = OpenAlexFetcher()
-        without_abstract = papers_db.count_papers() - papers_db.count_papers_with_abstract()
-        if without_abstract > 0:
-            console.print(
-                f"[dim]--fetch-abstracts: {without_abstract} 篇缺少摘要"
-                f"（已有 {papers_db.count_papers_with_abstract()} 篇）[/]"
-            )
-
     def progress_callback(done, _total, title, result):
         algo = f" [{result.algorithm}]" if result.algorithm else ""
         if result.priority == "S":
@@ -697,8 +681,6 @@ def survey_classify(ctx, survey_id, dry_run, limit, start, no_export, fetch_abst
         limit=limit,
         start=start,
         progress_callback=progress_callback,
-        abstract_fetcher=oa_fetcher,
-        papers_db=papers_db,
     ))
 
     # Show final stats

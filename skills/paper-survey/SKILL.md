@@ -52,7 +52,6 @@ version: 0.2.0
 | 开始分类(全部) | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id>` | 15–60min |
 | 分类 50 篇后暂停 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --limit 50` | ~2min |
 | 从第 N 篇续传 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --start 100` | — |
-| 分类+补全摘要 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --fetch-abstracts` | — |
 | 分类不自动导出 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --no-export` | — |
 | 终端预览结果 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <id> --relevant-only` | <2s |
 | 导出 CSV | `cd $PAPER_DATABASE_HOME && python -m paper_database survey export --survey-id <id> --relevant-only` | <2s |
@@ -68,7 +67,6 @@ version: 0.2.0
 | `--dry-run` | 只打印 prompt 和论文信息，不调 API。用于验证 prompt 是否合理 |
 | `--limit N` / `-l N` | 最多分类 N 篇后停止。用于小批量测试或分批复核 |
 | `--start N` | 从第 N 篇开始（1-indexed）。用于 Ctrl+C 中断后的断点续传 |
-| `--fetch-abstracts` | 分类时自动通过 OpenAlex 补全缺失的摘要。有摘要的论文先分类，无摘要的扔线程池并行抓取，两路重叠执行不阻塞 |
 | `--no-export` | 分类完成后不自动导出 CSV（默认会自动导出到 `results/` 目录） |
 
 **断点续传组合用法**：
@@ -176,18 +174,19 @@ cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <
    cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id>
    ```
 
-### 场景6: 分类时自动补全缺失摘要
-用户: "有些论文没有摘要，分类的时候顺便帮我补上"
+### 场景6: 先补摘要再分类
+用户: "有些论文没有摘要，先补全再分类"
 
 ```bash
-cd $PAPER_DATABASE_HOME && python -m paper_database survey classify -s <id> --fetch-abstracts
-```
+# 1. 先批量补全摘要（DOI-only 模式，10 credits / 50 篇）
+cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-abstracts --doi-only
 
-`--fetch-abstracts` 通过 OpenAlex 批量查询补全缺失摘要。执行策略：
-- **有摘要的论文先开始分类**（不等待）
-- **无摘要的论文扔线程池并行抓取**（不阻塞事件循环）
-- 摘要抓取完成后立即加入分类队列
-- 两路重叠执行，总耗时 ≈ max(分类耗时, 抓取耗时)，而非两者相加
+# 2. 补全完成后创建新的调研（论文快照会包含摘要）
+cd $PAPER_DATABASE_HOME && python -m paper_database survey create --topic <topic> --name "新调研"
+
+# 3. 运行分类
+cd $PAPER_DATABASE_HOME && python -m paper_database survey classify -s <id>
+```
 
 ## 分类器配置
 
@@ -229,7 +228,7 @@ classifier:
 - 大批量分类建议在终端直接跑（不经过 Skill 对话），`tmux`/`screen` 中运行可随时 detach
 - `--start N` 用于断点续传，N = 已分类数 + 1（从 1 开始）。搭配 `survey stats` 查看进度
 - `--limit N` 用于分批：先跑 100 篇检查效果 → 调整 prompt → 继续跑
-- `--fetch-abstracts` 通过 OpenAlex 批量补全摘要，与分类并发执行
+- 建议先运行 `paper fetch-abstracts --doi-only` 补全摘要，再创建 survey 进行分类
 - `dry-run` 不消耗 LLM API 调用，只打印 prompt 和论文信息
 - 如果文献库没有数据，引导用户使用 `paper-database` 技能先建库
 - 不同 topic 的配置在 `config/topics.yaml` 中定义，可自行添加
