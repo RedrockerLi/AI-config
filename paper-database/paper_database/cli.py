@@ -575,7 +575,10 @@ def survey_stats(ctx, survey_id):
 
     console.print(f"\n[bold]Survey #{survey_id}[/]: {s['name']}")
     console.print(f"  Topic: {s['topic_key']}")
-    console.print(f"  Status: {s.get('status', 'pending')}")
+    console.print(f"  Status: {stats.get('status', 'pending')}")
+    eta = stats.get("eta")
+    if eta:
+        console.print(f"  [bold yellow]预计剩余时间: {eta}[/]")
     console.print(f"  总论文数: {stats['total']}")
     console.print(f"  已分类: {stats['classified']} ({stats['progress_pct']}%)")
     console.print(f"  未分类: {stats['unclassified']}")

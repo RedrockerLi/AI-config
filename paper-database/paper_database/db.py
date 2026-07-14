@@ -111,6 +111,15 @@ CREATE TABLE IF NOT EXISTS survey_result (
 CREATE INDEX IF NOT EXISTS idx_sr_survey ON survey_result(survey_id);
 CREATE INDEX IF NOT EXISTS idx_sr_unclassified
     ON survey_result(survey_id) WHERE is_relevant IS NULL;
+
+CREATE TABLE IF NOT EXISTS survey_progress_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    survey_id INTEGER REFERENCES survey(id) ON DELETE CASCADE,
+    classified_count INTEGER NOT NULL,
+    total_count INTEGER NOT NULL,
+    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_spl_survey ON survey_progress_log(survey_id, recorded_at);
 """
 
 
@@ -557,6 +566,80 @@ class Database:
         )
         self.conn.commit()
 
+    def _save_progress_snapshot(
+        self, survey_id: int, classified: int, total: int
+    ) -> Optional[dict]:
+        """Save current progress and return the *previous* snapshot (or None).
+
+        Only the most recent snapshot is kept per survey — old rows are deleted
+        before inserting the new one.
+        """
+        # Read the previous snapshot before deleting it
+        prev = self.conn.execute(
+            """SELECT classified_count, total_count, recorded_at
+               FROM survey_progress_log
+               WHERE survey_id = ?
+               ORDER BY recorded_at DESC
+               LIMIT 1""",
+            (survey_id,),
+        ).fetchone()
+
+        # Delete all old snapshots for this survey — keep only the new one
+        self.conn.execute(
+            "DELETE FROM survey_progress_log WHERE survey_id = ?",
+            (survey_id,),
+        )
+
+        self.conn.execute(
+            """INSERT INTO survey_progress_log (survey_id, classified_count, total_count, recorded_at)
+               VALUES (?, ?, ?, ?)""",
+            (survey_id, classified, total, datetime.now(timezone.utc).isoformat()),
+        )
+        self.conn.commit()
+
+        return dict(prev) if prev else None
+
+    def _compute_eta(self, survey_id: int, classified: int, total: int) -> Optional[str]:
+        """Compute ETA based on progress rate since the previous snapshot.
+
+        Saves the current snapshot (keeping only the latest), then compares
+        with the previous one to estimate remaining time.
+
+        Returns a human-readable string like "约 2 小时 15 分钟", or None if
+        there isn't enough data yet.
+        """
+        prev = self._save_progress_snapshot(survey_id, classified, total)
+
+        if prev is None:
+            return None
+
+        prev_classified = prev["classified_count"]
+
+        if prev_classified >= classified:
+            return None  # no progress since last check
+
+        prev_time = datetime.fromisoformat(prev["recorded_at"])
+        now = datetime.now(timezone.utc)
+        elapsed = (now - prev_time).total_seconds()
+
+        if elapsed <= 0:
+            return None
+
+        rate = (classified - prev_classified) / elapsed  # papers/sec
+        remaining = total - classified
+
+        if remaining <= 0 or rate <= 0:
+            return None
+
+        eta_seconds = remaining / rate
+
+        # Format: HH:MM:SS
+        total_seconds = int(eta_seconds)
+        h = total_seconds // 3600
+        m = (total_seconds % 3600) // 60
+        s = total_seconds % 60
+        return f"{h:02}:{m:02}:{s:02}"
+
     def survey_stats(self, survey_id: int) -> dict:
         """Return classification progress stats with S/A/B breakdown."""
         total_row = self.conn.execute(
@@ -591,6 +674,18 @@ class Database:
         a = a_row["cnt"] if a_row else 0
         b = b_row["cnt"] if b_row else 0
 
+        if classified == 0:
+            status = "pending"
+        elif classified < total:
+            status = "running"
+        else:
+            status = "completed"
+
+        # ETA: only compute when running, based on progress rate between snapshots
+        eta = None
+        if status == "running":
+            eta = self._compute_eta(survey_id, classified, total)
+
         return {
             "survey_id": survey_id,
             "total": total,
@@ -602,6 +697,8 @@ class Database:
             "relevant": s + a + b,
             "not_relevant": classified - s - a - b,
             "progress_pct": round(classified / total * 100, 1) if total > 0 else 0,
+            "status": status,
+            "eta": eta,
         }
 
     def get_unclassified(
