@@ -95,10 +95,27 @@ class DeepSeekClassifier:
 
         async def _process_one(paper: PaperMeta) -> ClassificationResult:
             nonlocal completed
-            async with self._sem:
-                result = await self.classify_single(paper, topic)
-            if save_callback:
-                save_callback(paper, result)
+            last_error = None
+            result = None
+            for retry in range(3):
+                try:
+                    async with self._sem:
+                        result = await self.classify_single(paper, topic)
+                    break
+                except Exception as e:
+                    last_error = e
+                    if retry < 2:
+                        wait = 2 ** (retry + 1)  # 2s, 4s
+                        await asyncio.sleep(wait)
+            if result is None:
+                result = ClassificationResult(
+                    priority="",
+                    reason=f"[API error after 3 retries] {last_error}",
+                    confidence=0.0,
+                )
+            else:
+                if save_callback:
+                    save_callback(paper, result)
             async with lock:
                 completed += 1
                 if progress_callback:
