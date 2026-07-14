@@ -87,31 +87,35 @@ class DeepSeekClassifier:
         topic: TopicConfig,
         dry_run: bool = False,
         limit: Optional[int] = None,
-        start: int = 1,
         progress_callback: Optional[Callable] = None,
     ):
         """Run classification for all unclassified papers in a survey.
 
-        Queue + Worker pattern: feeder loads papers from DB into a queue,
-        N workers pull and classify concurrently.  Semaphore is NOT used —
-        concurrency is controlled by the number of workers (= max_concurrency).
-        All slots stay busy, no batch-boundary idle time.
+        Claim-based Queue + Worker pattern:
+
+        1. On startup, reset any 'claimed' flags to 'unclaimed' (crash recovery).
+        2. Feeder atomically claims papers (SELECT + UPDATE in transaction)
+           only when the in-memory queue has room (max 2× concurrency).
+        3. N workers pull, classify, save result, then mark paper 'classified'.
+
+        This eliminates the old race condition where papers still in the
+        queue could be re-fetched by a subsequent get_unclassified() call.
         """
         total = 0
-        skipped = 0
         n = self.max_concurrency
+        max_inflight = n * 2  # memory cap: 2× concurrency
+
+        # ── Crash recovery: reset stale claimed flags ──────────
+        db.reset_claimed_flags()
 
         try:
             # ── dry-run: just print prompts ────────────────────
             if dry_run:
                 while True:
-                    rows = db.get_unclassified(survey_id, limit=2000)
+                    rows = db.claim_papers(survey_id, limit=2000)
                     if not rows:
                         break
                     for row in rows:
-                        skipped += 1
-                        if skipped < start:
-                            continue
                         total += 1
                         paper = PaperMeta(
                             title=row["title"], year=row["year"],
@@ -127,15 +131,22 @@ class DeepSeekClassifier:
                         print(f"{'='*60}")
                         if limit and total >= limit:
                             return
+                        # Release claim for dry-run (reset to unclaimed)
+                        db.conn.execute(
+                            "UPDATE paper SET flag = 'unclaimed' WHERE id = ?",
+                            (row["paper_id"],),
+                        )
+                        db.conn.commit()
                 return
 
             # ── Queue + Workers ─────────────────────────────────
-            queue: asyncio.Queue = asyncio.Queue(maxsize=n * 4)
+            queue: asyncio.Queue = asyncio.Queue(maxsize=max_inflight)
             done = asyncio.Event()
             lock = asyncio.Lock()
+            all_claimed = asyncio.Event()  # set when no more papers to claim
 
             async def _worker():
-                """Pull paper from queue, classify, save, repeat."""
+                """Pull paper from queue, classify, save, mark classified."""
                 while True:
                     item = await queue.get()
                     if item is None:          # sentinel — pass to next worker
@@ -146,20 +157,20 @@ class DeepSeekClassifier:
 
                     # ── Classify (with immediate retry) ─────────
                     result = None
-                    last_error = None
                     for retry in range(3):
                         try:
                             result = await self.classify_single(paper, topic)
                             break
-                        except Exception as e:
-                            last_error = e
+                        except Exception:
                             if retry < 2:
                                 await asyncio.sleep(2 ** (retry + 1))
                     if result is None:
-                        # All retries failed — silently skip, retry next run
+                        # All retries failed — paper stays 'claimed' in DB
+                        # but will be reset to 'unclaimed' on next restart
+                        queue.task_done()
                         continue
 
-                    # ── Save immediately ────────────────────────
+                    # ── Save result + mark paper classified ─────
                     analysis_json = ""
                     if result.is_relevant and any([
                         result.research_object, result.problem_goal,
@@ -179,6 +190,8 @@ class DeepSeekClassifier:
                         confidence=result.confidence,
                         analysis_json=analysis_json,
                     )
+                    # Mark paper flag as classified LAST
+                    db.mark_paper_classified(row["paper_id"])
 
                     # ── Progress ─────────────────────────────────
                     async with lock:
@@ -189,17 +202,25 @@ class DeepSeekClassifier:
                         if limit and total >= limit:
                             done.set()
 
-            # ── Feeder: load from DB, push to queue ─────────────
+                    queue.task_done()
+
+            # ── Feeder: claim papers on demand, push to queue ────
             async def _feeder():
-                nonlocal skipped
-                while True:
-                    rows = db.get_unclassified(survey_id, limit=2000)
+                while not done.is_set():
+                    # Don't claim more than queue can hold
+                    room = max_inflight - queue.qsize()
+                    if room <= 0:
+                        await asyncio.sleep(0.05)
+                        continue
+
+                    batch = min(room, 500)  # claim at most 500 at a time
+                    rows = db.claim_papers(survey_id, batch)
                     if not rows:
+                        # No more unclaimed papers — feed what's left,
+                        # then send sentinels
                         break
+
                     for row in rows:
-                        skipped += 1
-                        if skipped < start:
-                            continue
                         paper = PaperMeta(
                             title=row["title"], year=row["year"],
                             authors=json.loads(row["authors"]),
@@ -212,7 +233,8 @@ class DeepSeekClassifier:
                         await queue.put((paper, dict(row)))
                         if done.is_set():
                             return
-                # All rows loaded — send sentinels to workers
+
+                # All papers claimed — send sentinels to workers
                 await queue.put(None)
 
             # ── Launch feeder + workers concurrently ────────────

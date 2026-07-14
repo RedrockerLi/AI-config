@@ -1,4 +1,14 @@
-"""Exporter: CSV output according to topic output.columns config."""
+"""Exporter: CSV output according to topic output.columns config.
+
+Field resolution (priority order for each output column):
+  1. Direct key in the row dict (SQL alias like venue_name, paper_title, priority)
+  2. Key in the parsed analysis_json (research_object, algorithm, etc.)
+  3. Empty string
+
+This means adding a new field to prompt_template's JSON output and
+referencing it in topics.yaml output.columns is sufficient — no code
+changes needed.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +17,7 @@ import json
 from pathlib import Path
 
 from paper_database.config import OutputColumn, TopicConfig
-from paper_database.db import Database, SurveyResultRow
+from paper_database.db import Database
 
 
 class Exporter:
@@ -78,12 +88,12 @@ class Exporter:
     # ── Internal ─────────────────────────────────────────────
 
     @staticmethod
-    def _sort_rows(rows: list[SurveyResultRow], sort_by: list[str]) -> list[SurveyResultRow]:
-        def sort_key_desc(row: SurveyResultRow):
+    def _sort_rows(rows: list[dict], sort_by: list[str]) -> list[dict]:
+        def sort_key_desc(row: dict):
             keys = []
             for field in sort_by:
-                val = getattr(row, field, "")
-                if field == "year":
+                val = row.get(field, "")
+                if field in ("year", "paper_year"):
                     try:
                         keys.append(-int(val))
                     except (ValueError, TypeError):
@@ -95,9 +105,15 @@ class Exporter:
         return sorted(rows, key=sort_key_desc)
 
     @staticmethod
-    def _get_cell_value(row: SurveyResultRow, col: OutputColumn) -> str:
-        val = getattr(row, col.field, "")
+    def _get_cell_value(row: dict, col: OutputColumn) -> str:
+        # 1. Direct key in row dict (SQL alias)
+        if col.field in row:
+            val = row[col.field]
+        else:
+            # 2. Try analysis_json
+            val = _get_from_analysis(row, col.field)
 
+        # Apply transforms
         if col.transform == "join_comma":
             try:
                 authors = json.loads(str(val))
@@ -123,7 +139,7 @@ class Exporter:
     @staticmethod
     def _write_csv(
         filepath: Path,
-        rows: list[SurveyResultRow],
+        rows: list[dict],
         columns: list[OutputColumn],
     ):
         with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
@@ -133,3 +149,28 @@ class Exporter:
                 writer.writerow(
                     [Exporter._get_cell_value(row, col) for col in columns]
                 )
+
+
+# ── analysis_json helpers ──────────────────────────────────────
+
+def _parse_analysis(row: dict) -> dict:
+    """Parse (and cache) analysis_json from a row dict."""
+    cached = row.get("_analysis_parsed")
+    if cached is not None:
+        return cached
+    raw = row.get("analysis_json", "") or ""
+    parsed: dict = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+    # Cache on the row dict so we only parse once
+    row["_analysis_parsed"] = parsed
+    return parsed
+
+
+def _get_from_analysis(row: dict, field: str) -> str:
+    """Try to get a field value from the parsed analysis_json."""
+    analysis = _parse_analysis(row)
+    return str(analysis.get(field, ""))

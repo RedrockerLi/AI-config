@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -79,11 +78,13 @@ CREATE TABLE IF NOT EXISTS paper (
     abstract_source TEXT DEFAULT '',
     citation_count INTEGER DEFAULT 0,
     fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    abstract_fetched_at TIMESTAMP
+    abstract_fetched_at TIMESTAMP,
+    flag TEXT DEFAULT 'unclaimed'
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_venue_year ON paper(venue_id, year);
 CREATE INDEX IF NOT EXISTS idx_paper_dblp_key ON paper(dblp_key);
+CREATE INDEX IF NOT EXISTS idx_paper_flag ON paper(flag);
 
 CREATE TABLE IF NOT EXISTS survey (
     id INTEGER PRIMARY KEY,
@@ -121,29 +122,6 @@ CREATE TABLE IF NOT EXISTS survey_progress_log (
 );
 CREATE INDEX IF NOT EXISTS idx_spl_survey ON survey_progress_log(survey_id, recorded_at);
 """
-
-
-# ── Result dataclass ────────────────────────────────────────────
-
-@dataclass
-class SurveyResultRow:
-    """A row joining paper + survey_result for preview/export."""
-    paper_id: int
-    title: str
-    authors: str
-    year: int
-    venue_name: str
-    doi: str
-    abstract: str
-    citation_count: int
-    priority: str = ""            # "S" / "A" / "B" / ""
-    relevance_reason: str = ""
-    confidence: float = 0.0
-    # Structured extraction fields
-    research_object: str = ""
-    problem_goal: str = ""
-    method_innovation: str = ""
-    algorithm: str = ""
 
 
 # ── Database class ──────────────────────────────────────────────
@@ -190,14 +168,19 @@ class Database:
 
     def init_survey_db(self):
         """Create all tables for a survey-specific database."""
+        # Migrate existing tables FIRST (before CREATE which may reference new columns)
+        for table, col, col_def in [
+            ("survey_result", "analysis_json", "TEXT DEFAULT ''"),
+            ("paper", "flag", "TEXT DEFAULT 'unclaimed'"),
+        ]:
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {col} {col_def}"
+                )
+            except sqlite3.OperationalError:
+                pass
+
         self.conn.executescript(SURVEY_SCHEMA)
-        # Migrate: add analysis_json column if missing (for older survey DBs)
-        try:
-            self.conn.execute(
-                "ALTER TABLE survey_result ADD COLUMN analysis_json TEXT DEFAULT ''"
-            )
-        except sqlite3.OperationalError:
-            pass
         self.conn.commit()
 
     # ── Venue CRUD ───────────────────────────────────────────
@@ -506,13 +489,13 @@ class Database:
                      vrow["year_start"], vrow["year_end"]),
                 )
 
-        # Copy paper records (preserving IDs)
+        # Copy paper records (preserving IDs, flag defaults to 'unclaimed')
         for row in paper_rows:
             survey_db.conn.execute(
                 """INSERT INTO paper (id, dblp_key, title, year, venue_id,
                    authors, doi, abstract, abstract_source, citation_count,
-                   fetched_at, abstract_fetched_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   fetched_at, abstract_fetched_at, flag)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed')""",
                 (row["id"], row["dblp_key"], row["title"], row["year"],
                  row["venue_id"], row["authors"], row["doi"],
                  row["abstract"], row["abstract_source"],
@@ -573,7 +556,66 @@ class Database:
                WHERE survey_id = ?""",
             (survey_id,),
         )
+        # Also reset paper processing flags
+        self.conn.execute(
+            "UPDATE paper SET flag = 'unclaimed'",
+        )
         self.conn.commit()
+
+    # ── Paper flag / claim mechanism ───────────────────────────
+
+    def reset_claimed_flags(self):
+        """Reset any 'claimed' flags to 'unclaimed' (crash recovery on startup)."""
+        self.conn.execute(
+            "UPDATE paper SET flag = 'unclaimed' WHERE flag = 'claimed'"
+        )
+        self.conn.commit()
+
+    def claim_papers(
+        self, survey_id: int, limit: int
+    ) -> list[dict]:
+        """Atomically claim up to `limit` unclaimed, unclassified papers.
+
+        SELECT + UPDATE in a single transaction — no two callers can claim
+        the same paper.  Returns the claimed rows (full paper + venue data
+        plus the survey_result id).
+        """
+        with self.conn:  # transaction
+            rows = self.conn.execute(
+                """SELECT sr.id as result_id, sr.paper_id,
+                          p.title, p.year, p.authors, p.doi, p.abstract,
+                          p.citation_count, p.dblp_key,
+                          v.name as venue_name, v.key as venue_key, v.ccf_rank
+                   FROM survey_result sr
+                   JOIN paper p ON sr.paper_id = p.id
+                   JOIN venue v ON p.venue_id = v.id
+                   WHERE sr.survey_id = ?
+                     AND sr.is_relevant IS NULL
+                     AND p.flag = 'unclaimed'
+                   ORDER BY v.ccf_rank, p.year DESC, p.title
+                   LIMIT ?""",
+                (survey_id, limit),
+            ).fetchall()
+
+            if rows:
+                paper_ids = [r["paper_id"] for r in rows]
+                placeholders = ",".join("?" * len(paper_ids))
+                self.conn.execute(
+                    f"UPDATE paper SET flag = 'claimed' WHERE id IN ({placeholders})",
+                    paper_ids,
+                )
+
+        return [dict(r) for r in rows]
+
+    def mark_paper_classified(self, paper_id: int):
+        """Mark a paper's flag as 'classified' after survey_result is written."""
+        self.conn.execute(
+            "UPDATE paper SET flag = 'classified' WHERE id = ?",
+            (paper_id,),
+        )
+        self.conn.commit()
+
+    # ── Progress / ETA ────────────────────────────────────────
 
     def _save_progress_snapshot(
         self, survey_id: int, classified: int, total: int
@@ -769,18 +811,32 @@ class Database:
 
     def get_survey_results(
         self, survey_id: int, relevant_only: bool = False
-    ) -> list[SurveyResultRow]:
-        """Get all classified results for a survey, joined with paper + venue."""
+    ) -> list[dict]:
+        """Get all classified results for a survey, joined with paper + venue.
+
+        Returns list of dicts with keys following the naming convention:
+          venue_name, venue_ccf_rank, venue_type, venue_key
+          paper_title, paper_year, paper_doi, paper_authors, paper_abstract,
+          paper_citation_count, paper_dblp_key
+          priority (=is_relevant), reason (=relevance_reason), confidence,
+          analysis_json (raw JSON, parsed on demand by exporter)
+        """
         where = "sr.survey_id = ?"
         if relevant_only:
             where += " AND sr.is_relevant != ''"
 
         rows = self.conn.execute(
-            f"""SELECT sr.paper_id, p.title, p.authors, p.year,
-                       v.name as venue_name, p.doi, p.abstract,
-                       p.citation_count, sr.is_relevant,
-                       sr.relevance_reason, sr.confidence,
-                       sr.analysis_json
+            f"""SELECT v.name AS venue_name, v.ccf_rank AS venue_ccf_rank,
+                       v.type AS venue_type, v.key AS venue_key,
+                       p.title AS paper_title, p.year AS paper_year,
+                       p.doi AS paper_doi, p.authors AS paper_authors,
+                       p.abstract AS paper_abstract,
+                       p.citation_count AS paper_citation_count,
+                       p.dblp_key AS paper_dblp_key,
+                       sr.is_relevant AS priority,
+                       sr.relevance_reason AS reason,
+                       sr.confidence AS confidence,
+                       sr.analysis_json AS analysis_json
                FROM survey_result sr
                JOIN paper p ON sr.paper_id = p.id
                JOIN venue v ON p.venue_id = v.id
@@ -791,34 +847,10 @@ class Database:
 
         results = []
         for r in rows:
-            # Parse structured extraction from analysis_json
-            analysis = {}
-            raw = r["analysis_json"] or ""
-            if raw:
-                try:
-                    analysis = json.loads(raw)
-                except json.JSONDecodeError:
-                    pass
-
-            priority = (r["is_relevant"] or "").strip()
+            d = dict(r)
+            # Normalize priority: only S/A/B are valid
+            priority = (d.get("priority") or "").strip()
             if priority not in ("S", "A", "B"):
-                priority = ""
-
-            results.append(SurveyResultRow(
-                paper_id=r["paper_id"],
-                title=r["title"],
-                authors=r["authors"],
-                year=r["year"],
-                venue_name=r["venue_name"],
-                doi=r["doi"],
-                abstract=r["abstract"],
-                citation_count=r["citation_count"],
-                priority=priority,
-                relevance_reason=r["relevance_reason"] or "",
-                confidence=r["confidence"] or 0.0,
-                research_object=analysis.get("research_object", "") or analysis.get("研究对象", ""),
-                problem_goal=analysis.get("problem_goal", "") or analysis.get("问题/目标", ""),
-                method_innovation=analysis.get("method_innovation", "") or analysis.get("方法/创新", ""),
-                algorithm=analysis.get("algorithm", "") or analysis.get("调度算法", ""),
-            ))
+                d["priority"] = ""
+            results.append(d)
         return results

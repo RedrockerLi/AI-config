@@ -113,23 +113,29 @@ topics:
 
     output:
       format: csv
-      sort_by: ["year", "venue_name"]
+      sort_by: ["paper_year", "venue_name"]
       columns:
-        - field: title
+        - field: paper_title
           header: "标题"
           width: 60
         - field: venue_name
           header: "出处"
           width: 18
-        - field: year
+        - field: venue_ccf_rank
+          header: "CCF"
+          width: 6
+        - field: paper_year
           header: "年份"
           width: 8
-        - field: doi
+        - field: paper_doi
           header: "链接"
           width: 30
         - field: priority
           header: "优先级"
           width: 8
+        - field: reason
+          header: "判断理由"
+          width: 40
         - field: research_object
           header: "研究对象"
           width: 20
@@ -156,26 +162,28 @@ topics:
   #     - thermal
   #   output:
   #     format: xlsx
-  #     sort_by: ["year", "venue_name"]
+  #     sort_by: ["paper_year", "venue_name"]
   #     columns:
-  #       - field: title
+  #       - field: paper_title
   #         header: "论文标题"
   #         width: 60
-  #       - field: authors
+  #       - field: paper_authors
   #         header: "作者"
   #         width: 30
   #         transform: "join_comma"
-  #       - field: year
+  #       - field: paper_year
   #         header: "年份"
   #         width: 8
   #       - field: venue_name
   #         header: "会议/期刊"
   #         width: 18
-  #       - field: is_relevant
-  #         header: "是否功耗相关"
-  #         width: 12
-  #         transform: "bool_to_yes_no"
-  #       - field: relevance_reason
+  #       - field: venue_ccf_rank
+  #         header: "CCF"
+  #         width: 6
+  #       - field: priority
+  #         header: "优先级"
+  #         width: 8
+  #       - field: reason
   #         header: "判断理由"
   #         width: 50
   #       - field: confidence

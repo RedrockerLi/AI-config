@@ -51,7 +51,6 @@ version: 0.2.0
 | Dry-run 测试 prompt | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --dry-run --limit 3` | <1s |
 | 开始分类(全部) | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id>` | 15–60min |
 | 分类 50 篇后暂停 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --limit 50` | ~2min |
-| 从第 N 篇续传 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --start 100` | — |
 | 分类不自动导出 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --no-export` | — |
 | 终端预览结果 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <id> --relevant-only` | <2s |
 | 导出 CSV | `cd $PAPER_DATABASE_HOME && python -m paper_database survey export --survey-id <id> --relevant-only` | <2s |
@@ -66,16 +65,15 @@ version: 0.2.0
 |------|------|
 | `--dry-run` | 只打印 prompt 和论文信息，不调 API。用于验证 prompt 是否合理 |
 | `--limit N` / `-l N` | 最多分类 N 篇后停止。用于小批量测试或分批复核 |
-| `--start N` | 从第 N 篇开始（1-indexed）。用于 Ctrl+C 中断后的断点续传 |
 | `--no-export` | 分类完成后不自动导出 CSV（默认会自动导出到 `results/` 目录） |
 
-**断点续传组合用法**：
+**断点续传**：中断后直接重新运行相同命令即可，已分类的论文自动跳过，无需 `--start` 参数。
 ```bash
-# 第一次：跑 200 篇
+# 第一批：跑 200 篇
 cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id 1 --limit 200
 
-# 中断后继续：从第 201 篇开始
-cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id 1 --start 201
+# 中断后继续：直接重新运行
+cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id 1
 ```
 
 ## 典型对话流程
@@ -106,7 +104,7 @@ cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id 
    # 但实际瓶颈在 LLM API 响应速度，每篇约 1-2s，2000/32×1.5s ≈ 1.5 分钟
    cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id>
    ```
-   告知用户：分类中可随时 Ctrl+C 暂停，之后用 `--start N` 续传（N = 已分类数 + 1）。
+   告知用户：分类中可随时 Ctrl+C 暂停，之后直接重新运行相同命令即可自动续传。
 
 5. **查看结果**（可执行）：
    ```bash
@@ -214,10 +212,12 @@ classifier:
 
 ## 技术要点
 
-- **分类实现**：通过 `httpx.AsyncClient` 并发调用 LLM API（provider 由 `config/classifier.yaml` 配置），使用 `asyncio.Semaphore` 控制并发数（默认 32）
+- **分类实现**：通过 `httpx.AsyncClient` 并发调用 LLM API（provider 由 `config/classifier.yaml` 配置），采用 Claim-based Queue + Worker 模式：feeder 原子 claim 未分类论文 → 放入队列 → worker 分类后标记为 classified，杜绝重复分类
+- **内存控制**：队列最多缓存 `2 × max_concurrency` 篇论文，feeder 按需补充
 - **耗时计算**：总耗时 ≈ ceil(论文数 / max_concurrency) × 每篇 API 响应时间。每篇约 1-2 秒，2000 篇 / 32 并发 ≈ 1-1.5 分钟（实际受限于 API 速率）
 - **自动导出**：`survey classify` 完成后自动导出 CSV 到 `results/survey_<id>_<name>.csv`（仅导出相关论文）
-- **断点续传**：中断后用 `survey stats --survey-id <id>` 查看已分类数，然后用 `--start N` 续传
+- **断点续传**：中断后直接重新运行相同命令，已分类论文自动跳过（通过 paper.flag 机制）
+- **输出配置**：CSV 列由 `config/topics.yaml` 的 `output.columns` 完全控制。`venue_*` → venue 表，`paper_*` → paper 表，其他 → survey_result 或 prompt_template 输出的 JSON 字段。新增输出字段只需改 YAML，无需改代码
 - **优先级**：S (Strong Match，研究方向核心) > A (Architecture Scheduling，体系结构相关) > B (General Scheduling，调度相关但联系较弱)
 
 ## 重要提醒
@@ -226,8 +226,8 @@ classifier:
 - **绝对不要动论文原始数据**：`survey reset` 只清空分类结果，保留论文元数据和摘要。永远不要 DELETE/UPDATE `paper` 或 `venue` 表
 - 分类是并发调用 LLM API，不是 subprocess 调用 claude CLI。provider 和模型在 `config/classifier.yaml` 中配置
 - 大批量分类建议在终端直接跑（不经过 Skill 对话），`tmux`/`screen` 中运行可随时 detach
-- `--start N` 用于断点续传，N = 已分类数 + 1（从 1 开始）。搭配 `survey stats` 查看进度
 - `--limit N` 用于分批：先跑 100 篇检查效果 → 调整 prompt → 继续跑
+- 中断后直接重新运行即可自动续传（已分类的论文自动跳过），无需 `--start` 参数
 - 建议先运行 `paper fetch-abstracts --doi-only` 补全摘要，再创建 survey 进行分类
 - `dry-run` 不消耗 LLM API 调用，只打印 prompt 和论文信息
 - 如果文献库没有数据，引导用户使用 `paper-database` 技能先建库
