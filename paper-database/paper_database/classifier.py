@@ -64,8 +64,11 @@ class DeepSeekClassifier:
             base_url=self.api_base_url,
             timeout=httpx.Timeout(self.timeout),
             headers={"Authorization": f"Bearer {self.api_key}"},
+            limits=httpx.Limits(
+                max_connections=self.max_concurrency + 10,
+                max_keepalive_connections=self.max_concurrency + 10,
+            ),
         )
-        self._sem = asyncio.Semaphore(self.max_concurrency)
 
     # ── Public API ───────────────────────────────────────────
 
