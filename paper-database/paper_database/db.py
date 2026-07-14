@@ -152,8 +152,13 @@ class Database:
     """SQLite database manager for paper survey."""
 
     def __init__(self, db_path: str | Path = "papers.db"):
-        self.db_path = str(db_path)
+        self._db_path = str(db_path)
         self._conn: Optional[sqlite3.Connection] = None
+
+    @property
+    def db_path(self) -> str:
+        """Path to the SQLite database file (for creating thread-safe copies)."""
+        return self._db_path
 
     @property
     def conn(self) -> sqlite3.Connection:

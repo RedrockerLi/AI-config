@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 from dataclasses import dataclass
 from typing import Optional, Callable
 
@@ -155,6 +156,37 @@ class DeepSeekClassifier:
         total_processed = 0
         skipped = 0
 
+        _abstract_db = papers_db or db
+
+        # ── Background thread: fetch ALL missing abstracts ──────
+        if abstract_fetcher is not None and papers_db is not None:
+            all_rows = papers_db.get_papers_without_abstract(limit=999999)
+            if all_rows:
+                all_missing = [
+                    PaperMeta(
+                        title=r["title"], year=r["year"],
+                        authors=json.loads(r.get("authors", "[]")),
+                        dblp_key=r["dblp_key"],
+                        doi=r.get("doi", "") or "",
+                        abstract=r.get("abstract", "") or "",
+                    )
+                    for r in all_rows
+                ]
+                bg_db_path = papers_db.db_path
+                print(
+                    f"  [后台] 启动摘要预取线程 ({len(all_missing)} 篇, "
+                    f"{sum(1 for p in all_missing if p.doi.strip())} 有 DOI)..."
+                )
+
+                def _fetch_all():
+                    bg_db = Database(bg_db_path)
+                    bg_db.init_db()
+                    abstract_fetcher.fetch_abstracts_batch(
+                        all_missing, db=bg_db, doi_only=True,
+                    )
+
+                threading.Thread(target=_fetch_all, daemon=True).start()
+
         try:
             while True:
                 rows = db.get_unclassified(survey_id, limit=batch_size)
@@ -207,7 +239,6 @@ class DeepSeekClassifier:
 
                 # ── Check papers_db for existing abstracts ─────────
                 # survey DB 的 paper 表是快照，需查主库确认是否有摘要
-                _abstract_db = papers_db or db
                 if _abstract_db is not db:
                     for paper in papers:
                         if not paper.abstract.strip():
@@ -215,8 +246,7 @@ class DeepSeekClassifier:
                             if existing:
                                 paper.abstract = existing
 
-                # ── Classification (with optional on-the-fly abstract fetch) ─
-                # 逐篇保存回调: 每篇分类完立即写 DB，Ctrl+C 不丢
+                # ── 逐篇保存回调 ──────────────────────────────────
                 def _save(paper: PaperMeta, result: ClassificationResult):
                     row = row_index.get(paper.dblp_key, {})
                     analysis_json = ""
@@ -239,19 +269,58 @@ class DeepSeekClassifier:
                         analysis_json=analysis_json,
                     )
 
-                if abstract_fetcher is not None:
-                    await self._classify_with_fetch(
-                        papers, topic, progress_callback,
-                        abstract_fetcher, _abstract_db, row_index, _save,
-                    )
-                else:
+                # ── Split ready / missing ──────────────────────────
+                ready = [p for p in papers if p.abstract.strip()]
+                missing = [p for p in papers if not p.abstract.strip()]
+                batch_done = 0
+
+                # Classify papers that have abstracts
+                if ready:
                     await self.classify_batch(
-                        papers, topic,
+                        ready, topic,
                         progress_callback=progress_callback,
                         save_callback=_save,
                     )
+                    batch_done += len(ready)
 
-                total_processed += len(papers)
+                # Missing papers
+                if missing:
+                    if abstract_fetcher is not None:
+                        # Give background thread a chance to write abstracts
+                        await asyncio.sleep(1.0)
+                        for paper in missing:
+                            abstract = _abstract_db.get_paper_abstract(paper.dblp_key)
+                            if abstract:
+                                paper.abstract = abstract
+                        retry_ready = [p for p in missing if p.abstract.strip()]
+                        if retry_ready:
+                            await self.classify_batch(
+                                retry_ready, topic,
+                                progress_callback=progress_callback,
+                                save_callback=_save,
+                            )
+                            batch_done += len(retry_ready)
+                        # Still-missing papers: skip (is_relevant stays NULL → retry next batch)
+                    else:
+                        # No abstract fetcher: classify as-is (标题判断)
+                        await self.classify_batch(
+                            missing, topic,
+                            progress_callback=progress_callback,
+                            save_callback=_save,
+                        )
+                        batch_done += len(missing)
+
+                total_processed += batch_done
+
+                # Stall detection: if nothing got classified this batch,
+                # the background thread may have finished or we have no
+                # abstracts for the remaining papers — stop.
+                if batch_done == 0:
+                    print(
+                        "  [classify] 本批 0 篇可分类（等待摘要后台线程），"
+                        "停止。重新运行可接续。"
+                    )
+                    break
 
                 if limit and total_processed >= limit:
                     return
@@ -260,65 +329,6 @@ class DeepSeekClassifier:
                     break
         finally:
             await self._client.aclose()
-
-    # ── On-the-fly abstract fetching ─────────────────────────
-
-    async def _classify_with_fetch(
-        self,
-        papers: list[PaperMeta],
-        topic: TopicConfig,
-        progress_callback: Optional[Callable],
-        abstract_fetcher,
-        db: Database,
-        row_index: dict[str, dict],
-        save_callback: Callable,
-    ) -> None:
-        """Classify papers, fetching missing abstracts on-the-fly.
-
-        Abstracts are fetched in a thread pool (to avoid blocking the
-        async event loop) while papers that already have abstracts
-        are classified concurrently.
-        """
-        missing = [p for p in papers if not p.abstract.strip()]
-        ready   = [p for p in papers if p.abstract.strip()]
-
-        # ── Launch abstract fetch in thread pool (non-blocking) ─
-        fetch_task = None
-        if missing:
-            loop = asyncio.get_running_loop()
-            # NOTE: 不传 db — 线程池不能共享 SQLite 连接
-            # 摘要结果在 await 后由主线程写入
-            fetch_task = loop.run_in_executor(
-                None,
-                lambda: abstract_fetcher.fetch_abstracts_batch(
-                    missing, doi_only=True
-                ),
-            )
-
-        # ── Classify ready papers (overlaps with fetching) ────
-        if ready:
-            await self.classify_batch(
-                ready, topic,
-                progress_callback=progress_callback,
-                save_callback=save_callback,
-            )
-
-        # ── Wait for abstracts → write DB (main thread) → classify ─
-        if fetch_task:
-            fetched = await fetch_task
-            for paper in missing:
-                abstract = fetched.get(paper.dblp_key, "")
-                if abstract:
-                    paper.abstract = abstract
-                    db.update_paper_abstract(
-                        paper.dblp_key, abstract, "openalex",
-                    )
-
-            await self.classify_batch(
-                missing, topic,
-                progress_callback=progress_callback,
-                save_callback=save_callback,
-            )
 
     def _build_prompt(self, paper: PaperMeta, topic: TopicConfig) -> str:
         abstract = paper.abstract or "（无摘要，仅根据标题判断）"
