@@ -30,7 +30,7 @@ classifier:
       max_tokens: 800
       temperature: 0.0
       enable_thinking: false
-      max_concurrency: 32
+      max_concurrency: 128
 
   # ── 通用设置 (provider-agnostic) ─────────────────────────────
   # 以下为 provider 未指定时的默认值
