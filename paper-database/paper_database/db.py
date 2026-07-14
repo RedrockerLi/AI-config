@@ -384,13 +384,16 @@ class Database:
         return row["cnt"] if row else 0
 
     def paper_stats(self) -> dict:
-        """Return paper statistics grouped by venue."""
+        """Return paper statistics grouped by venue + year, with abstract counts."""
         rows = self.conn.execute(
             """SELECT v.key as venue_key, v.name as venue_name,
-                      p.year, COUNT(*) as cnt
+                      v.ccf_rank,
+                      p.year, COUNT(*) as cnt,
+                      SUM(CASE WHEN p.abstract != '' AND p.abstract IS NOT NULL
+                          THEN 1 ELSE 0 END) as with_abstract
                FROM paper p JOIN venue v ON p.venue_id = v.id
                GROUP BY v.key, p.year
-               ORDER BY v.key, p.year"""
+               ORDER BY v.ccf_rank, v.key, p.year"""
         ).fetchall()
         total = self.count_papers()
         with_abstract = self.count_papers_with_abstract()

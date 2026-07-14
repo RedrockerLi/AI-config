@@ -461,16 +461,32 @@ def paper_stats(ctx):
     stats = db.paper_stats()
 
     console.print(f"\n[bold]论文统计[/]")
-    console.print(f"  总计: {stats['total']} 篇")
-    console.print(f"  有摘要: {stats['with_abstract']} 篇")
+    abstract_pct = stats['with_abstract'] / max(stats['total'], 1) * 100
+    console.print(
+        f"  总计: {stats['total']} 篇  |  "
+        f"有摘要: {stats['with_abstract']} 篇 "
+        f"([green]{abstract_pct:.1f}%[/])"
+    )
 
-    table = RichTable(title="按 Venue + Year 统计")
-    table.add_column("Venue", style="cyan")
-    table.add_column("Year")
-    table.add_column("Count")
+    table = RichTable(title="按 Venue + Year 统计 (CCF 排序)")
+    table.add_column("Venue", style="cyan", width=12)
+    table.add_column("CCF", width=4)
+    table.add_column("Year", width=5)
+    table.add_column("Total", justify="right")
+    table.add_column("有摘要", justify="right")
 
     for row in stats["by_venue_year"]:
-        table.add_row(row["venue_key"], str(row["year"]), str(row["cnt"]))
+        ccf = row.get("ccf_rank", "")
+        abs_cnt = row["with_abstract"]
+        total = row["cnt"]
+        abs_display = (
+            f"[red]{abs_cnt}[/]" if abs_cnt < total
+            else str(abs_cnt)
+        )
+        table.add_row(
+            row["venue_key"], ccf, str(row["year"]),
+            str(total), abs_display,
+        )
 
     console.print(table)
 
