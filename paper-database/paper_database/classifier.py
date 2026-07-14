@@ -346,17 +346,11 @@ class DeepSeekClassifier:
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
-                # Last resort: check for S/A/B in raw text
-                priority = ""
-                for p in ("S", "A", "B"):
-                    if p in text.upper():
-                        priority = p
-                        break
-                return ClassificationResult(
-                    priority=priority,
-                    reason=f"[JSON parse failed] {text[:200]}",
-                    confidence=0.3,
-                )
+                # JSON parse failed — treat as classification failure.
+                # Raise so the worker retries the API call; if all
+                # retries fail the paper stays 'claimed' and will be
+                # reset to 'unclaimed' on next restart.
+                raise ValueError(f"[JSON parse failed] {text[:200]}")
 
         priority = str(data.get("priority", "") or "")
         # Normalize: accept "S"/"A"/"B", reject anything else
