@@ -22,15 +22,14 @@ from paper_database.fetcher.base import PaperMeta
 
 @dataclass
 class ClassificationResult:
-    priority: str = ""             # "S" / "A" / "B" / "" ("" = not relevant)
-    reason: str = ""
-    confidence: float = 0.0
-    extra: dict = field(default_factory=dict)  # all other JSON fields from model
+    """`include` is the only hardcoded field — set from model JSON ``include`` key.
 
-    @property
-    def is_relevant(self) -> bool:
-        """Backward compat: True if any priority is set."""
-        return self.priority in ("S", "A", "B")
+    1 = paper belongs in survey, 0 = does not.  Stored in DB ``include``.
+    Everything else goes into ``extra``, written to real DB columns.
+    """
+
+    include: int = 0  # 1 = include in survey, 0 = exclude
+    extra: dict = field(default_factory=dict)
 
 
 class DeepSeekClassifier:
@@ -167,15 +166,10 @@ class DeepSeekClassifier:
                         continue
 
                     # ── Save result + mark paper classified ─────
-                    analysis_json = ""
-                    if result.extra:
-                        analysis_json = json.dumps(result.extra, ensure_ascii=False)
                     db.mark_result(
                         row.get("result_id", 0),
-                        is_relevant=result.priority,
-                        reason=result.reason,
-                        confidence=result.confidence,
-                        analysis_json=analysis_json,
+                        include=result.include,
+                        columns=result.extra,
                     )
                     # Mark paper flag as classified LAST
                     db.mark_paper_classified(row["paper_id"])
@@ -235,13 +229,22 @@ class DeepSeekClassifier:
 
     def _build_prompt(self, paper: PaperMeta, topic: TopicConfig) -> str:
         abstract = paper.abstract or "（无摘要，仅根据标题判断）"
-        return topic.prompt_template.format(
+        body = topic.prompt_template.format(
             topic_name=topic.name,
             topic_description=topic.description,
             topic_keywords=", ".join(topic.keywords),
             title=paper.title,
             abstract=abstract,
         )
+        # System instruction: the ONE hardcoded contract between code and model.
+        # The model MUST output "include": true/false so the code knows whether
+        # to include this paper in the survey results.
+        system = (
+            'Your response must be a single JSON object.\n'
+            'It MUST include this key:\n'
+            '  "include": true if the paper belongs in this survey, false otherwise.\n'
+        )
+        return system + "\n" + body
 
     async def _call_api(self, prompt: str) -> str:
         """Call DeepSeek chat completions API. Returns JSON string from content."""
@@ -319,45 +322,30 @@ class DeepSeekClassifier:
 
     @staticmethod
     def _parse_response(text: str) -> ClassificationResult:
-        """Parse JSON response from API."""
-        # Try to find JSON object in the text
-        json_match = re.search(r'\{[^{}]*"priority"[^{}]*\}', text, re.DOTALL)
+        """Parse JSON response from API.
+
+        The ONE hardcoded contract: the model MUST output ``"include": true/false``.
+        Everything else goes into ``extra``, written to survey_result columns.
+        """
+        # Try to find JSON object containing "include" key
+        json_match = re.search(r'\{[^{}]*"include"[^{}]*\}', text, re.DOTALL)
         if json_match:
             text = json_match.group(0)
 
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            # Try to fix common issues
             text = text.replace("'", '"')
             try:
                 data = json.loads(text)
             except json.JSONDecodeError:
-                # JSON parse failed — treat as classification failure.
-                # Raise so the worker retries the API call; if all
-                # retries fail the paper stays 'claimed' and will be
-                # reset to 'unclaimed' on next restart.
                 raise ValueError(f"[JSON parse failed] {text[:200]}")
 
-        priority = str(data.get("priority", "") or "")
-        # Normalize: accept "S"/"A"/"B", reject anything else
-        if priority not in ("S", "A", "B"):
-            priority = ""
+        # Hardcoded: "include" → include (1/0)
+        include_raw = data.pop("include", False)
+        include = 1 if include_raw is True or str(include_raw).strip().lower() == "true" else 0
 
-        # Standard fields stored in survey_result columns
-        reason = str(data.get("reason", ""))
-        confidence = float(data.get("confidence", 0.5))
+        # Everything else → extra → written to survey_result columns
+        extra: dict = {k: str(v) if v else "" for k, v in data.items()}
 
-        # Everything else from the model JSON → stored in analysis_json,
-        # automatically available for export via output.columns
-        extra: dict = {}
-        for k, v in data.items():
-            if k not in ("priority", "reason", "confidence"):
-                extra[k] = str(v) if v else ""
-
-        return ClassificationResult(
-            priority=priority,
-            reason=reason,
-            confidence=confidence,
-            extra=extra,
-        )
+        return ClassificationResult(include=include, extra=extra)

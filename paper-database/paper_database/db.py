@@ -97,21 +97,8 @@ CREATE TABLE IF NOT EXISTS survey (
     completed_at TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS survey_result (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    survey_id INTEGER REFERENCES survey(id) ON DELETE CASCADE,
-    paper_id INTEGER REFERENCES paper(id),
-    is_relevant INTEGER DEFAULT NULL,
-    relevance_reason TEXT DEFAULT '',
-    confidence REAL DEFAULT 0.0,
-    analysis_json TEXT DEFAULT '',
-    classified_at TIMESTAMP,
-    UNIQUE(survey_id, paper_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_sr_survey ON survey_result(survey_id);
-CREATE INDEX IF NOT EXISTS idx_sr_unclassified
-    ON survey_result(survey_id) WHERE is_relevant IS NULL;
+-- survey_result is created dynamically in create_survey_db()
+-- based on topic.output.columns
 
 CREATE TABLE IF NOT EXISTS survey_progress_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +111,23 @@ CREATE INDEX IF NOT EXISTS idx_spl_survey ON survey_progress_log(survey_id, reco
 """
 
 
+# ── Helpers ──────────────────────────────────────────────────────
+
+def _survey_result_columns(topic: TopicConfig) -> list[str]:
+    """Return field names from output.columns that become survey_result columns.
+
+    Excludes venue_* / paper_* prefixed fields (those come from JOINs).
+    """
+    cols: list[str] = []
+    for c in topic.output.columns:
+        f = c.field
+        if f.startswith("venue_") or f.startswith("paper_"):
+            continue
+        if f not in cols:
+            cols.append(f)
+    return cols
+
+
 # ── Database class ──────────────────────────────────────────────
 
 class Database:
@@ -132,6 +136,7 @@ class Database:
     def __init__(self, db_path: str | Path = "papers.db"):
         self._db_path = str(db_path)
         self._conn: Optional[sqlite3.Connection] = None
+        self._survey_columns: list[str] = []  # set by create_survey_db
 
     @property
     def db_path(self) -> str:
@@ -167,21 +172,34 @@ class Database:
         self.conn.commit()
 
     def init_survey_db(self):
-        """Create all tables for a survey-specific database."""
-        # Migrate existing tables FIRST (before CREATE which may reference new columns)
-        for table, col, col_def in [
-            ("survey_result", "analysis_json", "TEXT DEFAULT ''"),
-            ("paper", "flag", "TEXT DEFAULT 'unclaimed'"),
-        ]:
-            try:
-                self.conn.execute(
-                    f"ALTER TABLE {table} ADD COLUMN {col} {col_def}"
-                )
-            except sqlite3.OperationalError:
-                pass
+        """Create fixed tables (venue, paper, survey, progress_log).
+
+        survey_result is created separately by create_survey_db() based on
+        the topic's output.columns.
+        """
+        # Migrate: add flag column to paper if missing (older survey DBs)
+        try:
+            self.conn.execute("ALTER TABLE paper ADD COLUMN flag TEXT DEFAULT 'unclaimed'")
+        except sqlite3.OperationalError:
+            pass
 
         self.conn.executescript(SURVEY_SCHEMA)
         self.conn.commit()
+
+        # Load dynamic columns from existing survey_result table
+        self._load_survey_columns()
+
+    def _load_survey_columns(self):
+        """Discover dynamic survey_result columns from the table schema.
+
+        Excludes fixed columns (id, survey_id, paper_id, include, classified_at).
+        """
+        try:
+            info = self.conn.execute("PRAGMA table_info(survey_result)").fetchall()
+        except sqlite3.OperationalError:
+            return
+        fixed = {"id", "survey_id", "paper_id", "include", "classified_at"}
+        self._survey_columns = [r["name"] for r in info if r["name"] not in fixed]
 
     # ── Venue CRUD ───────────────────────────────────────────
 
@@ -520,11 +538,36 @@ class Database:
              datetime.now(timezone.utc).isoformat()),
         )
 
+        # ── Dynamically create survey_result from output.columns ──
+        extra_cols = _survey_result_columns(topic)
+        col_defs = ", ".join(f"{c} TEXT DEFAULT ''" for c in extra_cols)
+        survey_db.conn.execute(
+            f"""CREATE TABLE survey_result (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                survey_id INTEGER REFERENCES survey(id) ON DELETE CASCADE,
+                paper_id INTEGER REFERENCES paper(id),
+                include INTEGER DEFAULT NULL,
+                classified_at TIMESTAMP,
+                {col_defs},
+                UNIQUE(survey_id, paper_id)
+            )"""
+        )
+        survey_db.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sr_survey ON survey_result(survey_id)"
+        )
+        survey_db.conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_sr_unclassified
+               ON survey_result(survey_id) WHERE include IS NULL"""
+        )
+
         # Populate survey_result (one row per copied paper)
         survey_db.conn.executemany(
             "INSERT INTO survey_result (survey_id, paper_id) VALUES (?, ?)",
             [(survey_id, row["id"]) for row in paper_rows],
         )
+
+        # Store column list on the instance for later use
+        survey_db._survey_columns = extra_cols
 
         survey_db.conn.commit()
         return survey_db
@@ -549,17 +592,14 @@ class Database:
 
     def reset_survey(self, survey_id: int):
         """Clear classification results but keep the survey and paper data."""
-        self.conn.execute(
-            """UPDATE survey_result
-               SET is_relevant = NULL, relevance_reason = '', confidence = 0.0,
-                   analysis_json = '', classified_at = NULL
-               WHERE survey_id = ?""",
-            (survey_id,),
-        )
+        # Reset dynamic columns to '' alongside include=NULL
+        sets = ["include = NULL", "classified_at = NULL"]
+        for c in self._survey_columns:
+            sets.append(f"{c} = ''")
+        sql = f"UPDATE survey_result SET {', '.join(sets)} WHERE survey_id = ?"
+        self.conn.execute(sql, (survey_id,))
         # Also reset paper processing flags
-        self.conn.execute(
-            "UPDATE paper SET flag = 'unclaimed'",
-        )
+        self.conn.execute("UPDATE paper SET flag = 'unclaimed'")
         self.conn.commit()
 
     # ── Paper flag / claim mechanism ───────────────────────────
@@ -590,7 +630,7 @@ class Database:
                    JOIN paper p ON sr.paper_id = p.id
                    JOIN venue v ON p.venue_id = v.id
                    WHERE sr.survey_id = ?
-                     AND sr.is_relevant IS NULL
+                     AND sr.include IS NULL
                      AND p.flag = 'unclaimed'
                    ORDER BY v.ccf_rank, p.year DESC, p.title
                    LIMIT ?""",
@@ -692,37 +732,28 @@ class Database:
         return f"{h:02}:{m:02}:{s:02}"
 
     def survey_stats(self, survey_id: int) -> dict:
-        """Return classification progress stats with S/A/B breakdown."""
+        """Return classification progress stats.
+
+        include: 1 = include in survey, 0 = exclude, NULL = unclassified.
+        """
         total_row = self.conn.execute(
             "SELECT COUNT(*) as cnt FROM survey_result WHERE survey_id = ?",
             (survey_id,),
         ).fetchone()
         classified_row = self.conn.execute(
             """SELECT COUNT(*) as cnt FROM survey_result
-               WHERE survey_id = ? AND is_relevant IS NOT NULL""",
+               WHERE survey_id = ? AND include IS NOT NULL""",
             (survey_id,),
         ).fetchone()
-        s_row = self.conn.execute(
+        relevant_row = self.conn.execute(
             """SELECT COUNT(*) as cnt FROM survey_result
-               WHERE survey_id = ? AND is_relevant = 'S'""",
-            (survey_id,),
-        ).fetchone()
-        a_row = self.conn.execute(
-            """SELECT COUNT(*) as cnt FROM survey_result
-               WHERE survey_id = ? AND is_relevant = 'A'""",
-            (survey_id,),
-        ).fetchone()
-        b_row = self.conn.execute(
-            """SELECT COUNT(*) as cnt FROM survey_result
-               WHERE survey_id = ? AND is_relevant = 'B'""",
+               WHERE survey_id = ? AND include = 1""",
             (survey_id,),
         ).fetchone()
 
         total = total_row["cnt"] if total_row else 0
         classified = classified_row["cnt"] if classified_row else 0
-        s = s_row["cnt"] if s_row else 0
-        a = a_row["cnt"] if a_row else 0
-        b = b_row["cnt"] if b_row else 0
+        relevant = relevant_row["cnt"] if relevant_row else 0
 
         if classified == 0:
             status = "pending"
@@ -731,7 +762,6 @@ class Database:
         else:
             status = "completed"
 
-        # ETA: only compute when running, based on progress rate between snapshots
         eta = None
         if status == "running":
             eta = self._compute_eta(survey_id, classified, total)
@@ -741,11 +771,8 @@ class Database:
             "total": total,
             "classified": classified,
             "unclassified": total - classified,
-            "s": s,
-            "a": a,
-            "b": b,
-            "relevant": s + a + b,
-            "not_relevant": classified - s - a - b,
+            "relevant": relevant,
+            "not_relevant": classified - relevant,
             "progress_pct": round(classified / total * 100, 1) if total > 0 else 0,
             "status": status,
             "eta": eta,
@@ -763,7 +790,7 @@ class Database:
                FROM survey_result sr
                JOIN paper p ON sr.paper_id = p.id
                JOIN venue v ON p.venue_id = v.id
-               WHERE sr.survey_id = ? AND sr.is_relevant IS NULL
+               WHERE sr.survey_id = ? AND sr.include IS NULL
                ORDER BY v.ccf_rank, p.year DESC, p.title
                LIMIT ?""",
             (survey_id, limit),
@@ -771,86 +798,72 @@ class Database:
         return [dict(r) for r in rows]
 
     def mark_result(
-        self, result_id: int, is_relevant: str = "",
-        reason: str = "", confidence: float = 0.0,
-        analysis_json: str = "",
+        self, result_id: int, include: int = 0,
+        columns: Optional[dict[str, str]] = None,
     ):
-        """Mark a single survey_result as classified. is_relevant stores priority ("S"/"A"/"B"/"")."""
-        self.conn.execute(
-            """UPDATE survey_result
-               SET is_relevant = ?, relevance_reason = ?, confidence = ?,
-                   analysis_json = ?, classified_at = ?
-               WHERE id = ?""",
-            (is_relevant, reason, confidence,
-             analysis_json,
-             datetime.now(timezone.utc).isoformat(), result_id),
-        )
+        """Mark a single survey_result as classified.
+
+        include: 1 = include in survey, 0 = exclude.
+        columns: {field_name: value, ...} for the dynamic columns.
+        """
+        sets = ["include = ?", "classified_at = ?"]
+        params: list = [include, datetime.now(timezone.utc).isoformat()]
+        if columns:
+            for k, v in columns.items():
+                if k in self._survey_columns:  # safety: only write real columns
+                    sets.append(f"{k} = ?")
+                    params.append(v)
+        params.append(result_id)
+        sql = f"UPDATE survey_result SET {', '.join(sets)} WHERE id = ?"
+        self.conn.execute(sql, params)
         self.conn.commit()
 
     def mark_batch(self, results: list[dict]):
-        """Batch mark survey_results. Each dict: {id, is_relevant, reason, confidence, analysis_json}.
-        is_relevant stores priority string ("S"/"A"/"B"/"")."""
+        """Batch mark survey_results. Each dict: {id, include, columns: {k:v}}."""
         now = datetime.now(timezone.utc).isoformat()
-        rows = [
-            (r.get("is_relevant", ""),
-             r.get("reason", ""),
-             r.get("confidence", 0.0),
-             r.get("analysis_json", ""),
-             now,
-             r["id"])
-            for r in results
-        ]
-        self.conn.executemany(
-            """UPDATE survey_result
-               SET is_relevant = ?, relevance_reason = ?, confidence = ?,
-                   analysis_json = ?, classified_at = ?
-               WHERE id = ?""",
-            rows,
-        )
+        # Build per-row params from the columns dict in each result
+        all_cols = set()
+        for r in results:
+            cols = r.get("columns", {}) or {}
+            all_cols.update(cols.keys())
+        col_list = sorted(all_cols)
+        sets = ["include = ?", "classified_at = ?"] + [f"{c} = ?" for c in col_list]
+        sql = f"UPDATE survey_result SET {', '.join(sets)} WHERE id = ?"
+        rows = []
+        for r in results:
+            cols = r.get("columns", {}) or {}
+            row = [r.get("include", 0), now] + [cols.get(c, "") for c in col_list] + [r["id"]]
+            rows.append(row)
+        self.conn.executemany(sql, rows)
         self.conn.commit()
 
     def get_survey_results(
-        self, survey_id: int, relevant_only: bool = False
+        self, survey_id: int,
     ) -> list[dict]:
-        """Get all classified results for a survey, joined with paper + venue.
+        """Get relevant classified results for a survey.
 
-        Returns list of dicts with keys following the naming convention:
-          venue_name, venue_ccf_rank, venue_type, venue_key
-          paper_title, paper_year, paper_doi, paper_authors, paper_abstract,
-          paper_citation_count, paper_dblp_key
-          priority (=is_relevant), reason (=relevance_reason), confidence,
-          analysis_json (raw JSON, parsed on demand by exporter)
+        Always filters include=1 — export is for included papers only.
         """
-        where = "sr.survey_id = ?"
-        if relevant_only:
-            where += " AND sr.is_relevant != ''"
+        where = "sr.survey_id = ? AND sr.include = 1"
 
-        rows = self.conn.execute(
-            f"""SELECT v.name AS venue_name, v.ccf_rank AS venue_ccf_rank,
-                       v.type AS venue_type, v.key AS venue_key,
-                       p.title AS paper_title, p.year AS paper_year,
-                       p.doi AS paper_doi, p.authors AS paper_authors,
-                       p.abstract AS paper_abstract,
-                       p.citation_count AS paper_citation_count,
-                       p.dblp_key AS paper_dblp_key,
-                       sr.is_relevant AS priority,
-                       sr.relevance_reason AS reason,
-                       sr.confidence AS confidence,
-                       sr.analysis_json AS analysis_json
-               FROM survey_result sr
-               JOIN paper p ON sr.paper_id = p.id
-               JOIN venue v ON p.venue_id = v.id
-               WHERE {where}
-               ORDER BY v.ccf_rank, p.year DESC, p.title""",
-            (survey_id,),
-        ).fetchall()
+        # Dynamic SELECT: include + all survey_result columns
+        sr_cols = ", ".join([f"sr.{c}" for c in self._survey_columns])
+        if sr_cols:
+            sr_cols = ", " + sr_cols
 
-        results = []
-        for r in rows:
-            d = dict(r)
-            # Normalize priority: only S/A/B are valid
-            priority = (d.get("priority") or "").strip()
-            if priority not in ("S", "A", "B"):
-                d["priority"] = ""
-            results.append(d)
-        return results
+        sql = f"""SELECT v.name AS venue_name, v.ccf_rank AS venue_ccf_rank,
+                         v.type AS venue_type, v.key AS venue_key,
+                         p.title AS paper_title, p.year AS paper_year,
+                         p.doi AS paper_doi, p.authors AS paper_authors,
+                         p.abstract AS paper_abstract,
+                         p.citation_count AS paper_citation_count,
+                         p.dblp_key AS paper_dblp_key,
+                         sr.include{sr_cols}
+                 FROM survey_result sr
+                 JOIN paper p ON sr.paper_id = p.id
+                 JOIN venue v ON p.venue_id = v.id
+                 WHERE {where}
+                 ORDER BY v.ccf_rank, p.year DESC, p.title"""
+
+        rows = self.conn.execute(sql, (survey_id,)).fetchall()
+        return [dict(r) for r in rows]

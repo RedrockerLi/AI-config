@@ -52,8 +52,8 @@ version: 0.2.0
 | 开始分类(全部) | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id>` | 15–60min |
 | 分类 50 篇后暂停 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --limit 50` | ~2min |
 | 分类不自动导出 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --no-export` | — |
-| 终端预览结果 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <id> --relevant-only` | <2s |
-| 导出 CSV | `cd $PAPER_DATABASE_HOME && python -m paper_database survey export --survey-id <id> --relevant-only` | <2s |
+| 终端预览结果 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <id>` | <2s |
+| 导出 CSV | `cd $PAPER_DATABASE_HOME && python -m paper_database survey export --survey-id <id>` | <2s |
 | 清空分类结果 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey reset --survey-id <id>` | <1s |
 | 删除调研 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey delete --survey-id <id>` | <1s |
 
@@ -108,12 +108,12 @@ cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id 
 
 5. **查看结果**（可执行）：
    ```bash
-   cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <id> --relevant-only
+   cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <id>
    ```
 
    分类完成会自动导出 CSV 到 `results/survey_<id>_<name>.csv`。如需手动导出：
    ```bash
-   cd $PAPER_DATABASE_HOME && python -m paper_database survey export --survey-id <id> --relevant-only
+   cd $PAPER_DATABASE_HOME && python -m paper_database survey export --survey-id <id>
    ```
 
 ### 场景2: 只查某个会议的论文
@@ -150,7 +150,7 @@ cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id 
 
 ```bash
 cd $PAPER_DATABASE_HOME && python -m paper_database survey list
-cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <id> --relevant-only --limit 20
+cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <id> --limit 20
 ```
 
 ### 场景5: 重新调研（调整 prompt 后）
@@ -212,30 +212,37 @@ classifier:
 
 ## 输出字段配置约定（只改 YAML，不改代码）
 
-`topics.yaml` 中的 `prompt_template` 和 `output.columns` 遵循统一约定：
+### 代码对模型的唯一约定：`include` 字段
 
-### 字段分类
+代码在每次调用模型时**自动在 prompt 前面拼接**一段 system instruction，要求模型
+JSON 中**必须包含** `"include": true/false`。用户无需在 `topics.yaml` 中配置这个字段。
 
-| 字段类型 | 存储位置 | configuration |
-|---------|---------|--------------|
-| `priority`, `reason`, `confidence` | `survey_result` 表列（`is_relevant`, `relevance_reason`, `confidence`） | 无需在 `output.columns` 中声明即可使用 |
-| 其他所有字段（如 `research_object`, `algorithm` 等） | `survey_result.analysis_json`（模型的原始 JSON 输出） | 需在 `prompt_template` JSON 输出区和 `output.columns` 中同时出现 |
+- `include: true` → 论文被收录到调研结果（`include = 1`）
+- `include: false` → 论文不被收录（`include = 0`）
+
+`include` 字段名**写死在代码中**，`topics.yaml` 中不出现。统计命令展示「相关/不相关」计数。
+
+### 其他所有字段走真实 DB 列
+
+`include` 之外的所有字段**完全由 `topics.yaml` 控制**：
+
+- `output.columns` 中非 `venue_*`/`paper_*` 的字段 → 创建 survey 时自动建为 `survey_result` 表的列
+- `prompt_template` JSON 输出 key → 分类时直接写入对应列（列名 = key 名）
+- 导出时 `SELECT` 所有列 → 纯 dict lookup，无 JSON 解析
 
 ### 新增一个输出字段只需 2 步：
 
 1. 在 `prompt_template` 的 JSON 输出区添加该字段
-2. 在 `output.columns` 中添加对应列，`field` 名与 JSON key 一致
-3. 完成。**无需改任何 Python 代码。**
+2. 在 `output.columns` 中添加对应列（`field` 名与 JSON key 一致）
+3. 重新创建 survey（`survey create`）
+4. 完成。**无需改任何 Python 代码。**
 
 ### 命名约定
 
-- `venue_*` 前缀 → 直接读取 `venue` 表列（如 `venue_name`, `venue_ccf_rank`, `venue_type`）
-- `paper_*` 前缀 → 直接读取 `paper` 表列（如 `paper_title`, `paper_year`, `paper_doi`, `paper_authors`）
-- 无前缀 → 先查 `survey_result` 表列（SQL 别名），再查 `analysis_json`
-
-### 不必要的字段不要放进 prompt
-
-模型输出的 JSON 字段应与 `output.columns` 对应。不需要导出的字段不要放在 `prompt_template` 的 JSON 输出中（浪费 token）。例如当前 survey 的 output 不含 `confidence`，所以 prompt 也不要求模型输出 `confidence`。
+- `venue_*` 前缀 → `venue` 表列 JOIN（如 `venue_name`, `venue_ccf_rank`, `venue_type`）
+- `paper_*` 前缀 → `paper` 表列 JOIN（如 `paper_title`, `paper_year`, `paper_doi`, `paper_authors`）
+- 无前缀 → `survey_result` 表列（如 `priority`, `reason`, `research_object`, `algorithm`）
+- `include` → 固定列（INTEGER 0/1），不出现在 `output.columns` 中
 
 ## 技术要点
 
@@ -244,8 +251,9 @@ classifier:
 - **耗时计算**：总耗时 ≈ ceil(论文数 / max_concurrency) × 每篇 API 响应时间。每篇约 1-2 秒，2000 篇 / 32 并发 ≈ 1-1.5 分钟（实际受限于 API 速率）
 - **自动导出**：`survey classify` 完成后自动导出 CSV 到 `results/survey_<id>_<name>.csv`（仅导出相关论文）
 - **断点续传**：中断后直接重新运行相同命令，已分类论文自动跳过（通过 paper.flag 机制）
-- **输出配置**：CSV 列由 `config/topics.yaml` 的 `output.columns` 完全控制。`venue_*` → venue 表，`paper_*` → paper 表，其他 → survey_result 或 prompt_template 输出的 JSON 字段。新增输出字段只需改 YAML，无需改代码
-- **优先级**：S (Strong Match，研究方向核心) > A (Architecture Scheduling，体系结构相关) > B (General Scheduling，调度相关但联系较弱)
+- **YAML 驱动全链路**：`output.columns` 定义 survey_result 表结构 + CSV 输出格式。`venue_*` → venue 表 JOIN，`paper_*` → paper 表 JOIN，其他 → survey_result 实列。新增字段：prompt_template JSON 加 key + output.columns 加行 + 重建 survey，代码不动。
+- **include 字段**：代码自动注入 system prompt 要求模型输出 `"include": true/false`，决定论文是否收录。统计展示「相关/不相关」计数，导出自动过滤 include=1。
+- **分类体系由 YAML 定义**：不同调研可使用不同的分类字段名和取值（如 `priority: S/A/B`、`level: high/medium/low`、`score: 1-5`），代码不做任何假设。
 
 ## 重要提醒
 

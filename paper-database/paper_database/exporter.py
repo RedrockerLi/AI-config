@@ -1,13 +1,8 @@
 """Exporter: CSV output according to topic output.columns config.
 
-Field resolution (priority order for each output column):
-  1. Direct key in the row dict (SQL alias like venue_name, paper_title, priority)
-  2. Key in the parsed analysis_json (research_object, algorithm, etc.)
-  3. Empty string
-
-This means adding a new field to prompt_template's JSON output and
-referencing it in topics.yaml output.columns is sufficient — no code
-changes needed.
+All output fields are real DB columns — venue_* from venue table,
+paper_* from paper table, everything else from survey_result.
+No JSON parsing needed.
 """
 
 from __future__ import annotations
@@ -31,15 +26,14 @@ class Exporter:
         survey_id: int,
         topic: TopicConfig,
         output_path: str | Path,
-        relevant_only: bool = False,
     ) -> Path:
-        """Export survey results to CSV."""
+        """Export survey results to CSV (include=1 papers only)."""
         output_path = Path(output_path)
         if output_path.suffix.lower() != ".csv":
             output_path = output_path.with_suffix(".csv")
 
         output_cfg = topic.output
-        rows = self.db.get_survey_results(survey_id, relevant_only=relevant_only)
+        rows = self.db.get_survey_results(survey_id)
 
         if not rows:
             print("No results to export.")
@@ -56,14 +50,13 @@ class Exporter:
         self,
         survey_id: int,
         topic: TopicConfig,
-        relevant_only: bool = False,
         limit: int = 20,
     ):
-        """Rich table preview in terminal."""
+        """Rich table preview in terminal (include=1 papers only)."""
         from rich.console import Console
         from rich.table import Table
 
-        rows = self.db.get_survey_results(survey_id, relevant_only=relevant_only)
+        rows = self.db.get_survey_results(survey_id)
         output_cfg = topic.output
 
         if output_cfg.sort_by:
@@ -106,12 +99,8 @@ class Exporter:
 
     @staticmethod
     def _get_cell_value(row: dict, col: OutputColumn) -> str:
-        # 1. Direct key in row dict (SQL alias)
-        if col.field in row:
-            val = row[col.field]
-        else:
-            # 2. Try analysis_json
-            val = _get_from_analysis(row, col.field)
+        # Direct key in row dict — all columns are now real DB columns
+        val = row.get(col.field, "")
 
         # Apply transforms
         if col.transform == "join_comma":
@@ -149,28 +138,3 @@ class Exporter:
                 writer.writerow(
                     [Exporter._get_cell_value(row, col) for col in columns]
                 )
-
-
-# ── analysis_json helpers ──────────────────────────────────────
-
-def _parse_analysis(row: dict) -> dict:
-    """Parse (and cache) analysis_json from a row dict."""
-    cached = row.get("_analysis_parsed")
-    if cached is not None:
-        return cached
-    raw = row.get("analysis_json", "") or ""
-    parsed: dict = {}
-    if raw:
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            pass
-    # Cache on the row dict so we only parse once
-    row["_analysis_parsed"] = parsed
-    return parsed
-
-
-def _get_from_analysis(row: dict, field: str) -> str:
-    """Try to get a field value from the parsed analysis_json."""
-    analysis = _parse_analysis(row)
-    return str(analysis.get(field, ""))

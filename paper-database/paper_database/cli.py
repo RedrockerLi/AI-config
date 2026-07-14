@@ -598,9 +598,8 @@ def survey_stats(ctx, survey_id):
     console.print(f"  总论文数: {stats['total']}")
     console.print(f"  已分类: {stats['classified']} ({stats['progress_pct']}%)")
     console.print(f"  未分类: {stats['unclassified']}")
-    console.print(f"  [green]S (Strong Match): {stats['s']}[/]")
-    console.print(f"  [yellow]A (Architecture Scheduling): {stats['a']}[/]")
-    console.print(f"  [dim]B (General Scheduling): {stats['b']}[/]")
+    console.print(f"  相关: {stats['relevant']}")
+    console.print(f"  不相关: {stats['not_relevant']}")
 
 
 @survey.command("delete")
@@ -666,18 +665,14 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export):
     )
 
     def progress_callback(done, _total, title, result):
-        # Show first extra field value as hint (e.g. algorithm name)
+        # Show first extra field value as hint (e.g. priority or algorithm)
         hint = ""
         if result.extra:
             first_val = next((v for v in result.extra.values() if v), "")
             if first_val:
                 hint = f" [{first_val[:40]}]"
-        if result.priority == "S":
-            status = f"[green]S{hint}[/]"
-        elif result.priority == "A":
-            status = f"[yellow]A{hint}[/]"
-        elif result.priority == "B":
-            status = f"[dim]B[/]"
+        if result.include:
+            status = f"[green]✓{hint}[/]"
         else:
             status = "[dim]✗[/]"
         console.print(f"  [{done}] {status} {title[:70]}...")
@@ -692,10 +687,8 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export):
     # Show final stats
     final_stats = survey_db.survey_stats(survey_id)
     console.print(f"\n[green]✓[/] 完成! "
-                  f"S: {final_stats['s']} | "
-                  f"A: {final_stats['a']} | "
-                  f"B: {final_stats['b']} / "
-                  f"已分类: {final_stats['classified']}")
+                  f"已分类: {final_stats['classified']} | "
+                  f"相关: {final_stats['relevant']}")
 
     # Auto-export CSV (unless --no-export or dry-run)
     if not dry_run and not no_export:
@@ -703,18 +696,15 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export):
         output_path = Path("results") / f"survey_{survey_id}_{safe_name}"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         exporter = Exporter(survey_db)
-        filepath = exporter.export(
-            survey_id, topic_cfg, output_path, relevant_only=True
-        )
+        filepath = exporter.export(survey_id, topic_cfg, output_path)
         console.print(f"[green]✓[/] CSV 已导出: {filepath}")
 
 
 @survey.command("preview")
 @click.option("--survey-id", "-s", type=int, required=True)
-@click.option("--relevant-only", is_flag=True, default=False)
 @click.option("--limit", "-l", type=int, default=20)
 @click.pass_context
-def survey_preview(ctx, survey_id, relevant_only, limit):
+def survey_preview(ctx, survey_id, limit):
     """终端预览分类结果."""
     config = _resolve_config(ctx.obj["config_dir"])
     survey_db = _get_survey_db(survey_id, ctx.obj["config_dir"])
@@ -730,16 +720,15 @@ def survey_preview(ctx, survey_id, relevant_only, limit):
         sys.exit(1)
 
     exporter = Exporter(survey_db)
-    exporter.preview(survey_id, topic_cfg, relevant_only=relevant_only, limit=limit)
+    exporter.preview(survey_id, topic_cfg, limit=limit)
 
 
 @survey.command("export")
 @click.option("--survey-id", "-s", type=int, required=True)
 @click.option("--output", "-o", default="results/survey", help="输出文件路径 (不含扩展名)")
-@click.option("--relevant-only", is_flag=True, default=False, help="只导出相关论文")
 @click.pass_context
-def survey_export(ctx, survey_id, output, relevant_only):
-    """导出结果到 CSV."""
+def survey_export(ctx, survey_id, output):
+    """导出结果到 CSV (仅导出 include=1 的论文)."""
     config = _resolve_config(ctx.obj["config_dir"])
     survey_db = _get_survey_db(survey_id, ctx.obj["config_dir"])
 
@@ -758,9 +747,7 @@ def survey_export(ctx, survey_id, output, relevant_only):
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     exporter = Exporter(survey_db)
-    filepath = exporter.export(
-        survey_id, topic_cfg, output_path, relevant_only=relevant_only
-    )
+    filepath = exporter.export(survey_id, topic_cfg, output_path)
     console.print(f"[green]✓[/] 导出完成: {filepath}")
 
 

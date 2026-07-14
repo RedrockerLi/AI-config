@@ -107,7 +107,7 @@ topics:
         "algorithm": "算法名称+描述其策略（中文，不要留空）"
       }}
 
-      不属于调度的论文设置 priority 为 null。
+      不属于调度的论文设置 priority 为空字符串（即 ""）。
 
     output:
       format: csv

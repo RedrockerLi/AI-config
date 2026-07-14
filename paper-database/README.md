@@ -24,9 +24,7 @@ python -m paper_database survey classify -s 1 --dry-run --limit 3
 python -m paper_database survey classify -s 1 --limit 10
 
 # 7. 预览 + 导出
-python -m paper_database survey preview -s 1 --relevant-only
-python -m paper_database survey export -s 1 --relevant-only
-```
+python -m paper_database survey preview -s 1python -m paper_database survey export -s 1```
 
 ## 架构
 
@@ -123,9 +121,7 @@ python -m paper_database survey delete --survey-id X
 python -m paper_database survey classify -s X [--dry-run] [--limit N] [--start N]
 
 # Export
-python -m paper_database survey preview --survey-id X [--relevant-only]
-python -m paper_database survey export --survey-id X [-o path/to/output.csv] [--relevant-only]
-```
+python -m paper_database survey preview --survey-id Xpython -m paper_database survey export --survey-id X [-o path/to/output.csv]```
 
 ## AI Skills
 
