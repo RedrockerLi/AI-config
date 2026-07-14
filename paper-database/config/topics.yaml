@@ -182,43 +182,75 @@ topics:
       应选择论文主要关注的系统平台。
 
       =========================
+      Problem Goal
+      =========================
+
+      填写论文希望解决的问题，或者论文想达成的目标。
+
+      要求：
+
+      - 使用中文,写完整句子；
+      - 不得留空；
+      - 不要复述论文标题；
+      - 描述论文希望解决的核心问题或优化目标，而不是具体方法。
+
+      =========================
+      Method Innovation
+      =========================
+
+      填写论文提出的方法，或者相对于已有工作的核心创新。
+
+      要求：
+
+      - 使用中文,写完整句子；
+      - 不得留空；
+      - 不要简单写"提出一种新的调度算法";
+      - 应概括论文的关键思想或创新点，而不是论文整体贡献。
+
+      =========================
+      Algorithm
+      =========================
+
+      填写论文提出的算法名称及其核心策略。
+
+      要求：
+
+      - 使用中文,写完整句子；
+      - 不得留空；
+      - 若论文给出了算法名称，应优先使用原文名称；
+      - 若没有正式算法名称，应概括其核心策略；
+
+      =========================
       Remark
       =========================
 
-      Remark 用于补充论文最值得记录的信息，便于后续人工阅读和筛选。
+      Remark 用于补充其他信息
 
       要求：
 
       - 写完整句子；
-      - 不要重复 Level，Platform，problem_goal，method_innovation，algorithm
-      - 优先记录论文的重要信息。
+      - 只有Level和Platform**严格满足**前提条件时，才可以写Remark！
 
-      Remark 可包括但不限于：
+      可以写Remark的情况：
+      - Level = Architecture且Platform = Heterogeneous时，写异构平台组成。
+      - Level = Architecture且Platform = CGRA/Spatial时，对于涉及定制化加速器的论文，应优先说明该加速器主要面向的目标应用（如 CNN、Transformer、LLM、GNN、Graph Processing 等）
 
-      - 调度对象或关键模块；
-      - 异构平台组成；
-      - 特殊硬件或平台特点；
-      - 目标应用或应用领域。
-
-      对于涉及定制化加速器的论文，应优先说明该加速器主要面向的目标应用（如 CNN、Transformer、LLM、GNN、Graph Processing 等），而不仅仅描述其硬件平台。
+      除此之外都应该在Remark处留空
 
       =========================
       输出要求
       =========================
 
-      输出 JSON，不要输出任何解释文字。
+      输出 JSON，不要输出任何解释文字,格式如下：
 
       {{
-        "level": "Architecture",
-        "platform": "CGRA/Spatial",
-        "reason": "判断理由（80字以内）",
-        "problem_goal": "论文希望解决的问题，或者论文想达成的目标（中文，不要留空）",
-        "method_innovation": "论文提出的方法，或者和其他方法相比的创新（中文，不要留空）",
-        "algorithm": "算法名称+描述其策略（中文，不要留空）"
-        "remark": "CNN",
+        "level": "……",
+        "platform": "……",
+        "problem_goal": "……",
+        "method_innovation": "……",
+        "algorithm": "……"
+        "remark": "",
       }}
-
-      不属于调度的论文设置 level 为空字符串（即 ""）。
 
     output:
       format: csv
@@ -257,9 +289,6 @@ topics:
         - field: remark
           header: "Remark"
           width: 20
-        - field: reason
-          header: "判断理由"
-          width: 40
 
   # ── 示例: 添加更多主题 ──────────────────────────────────────
   # - key: power
