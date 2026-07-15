@@ -478,7 +478,7 @@ class Database:
             placeholders = ",".join("?" * len(chunk))
             for row in self.conn.execute(
                 f"""SELECT openalex_id FROM reference_work
-                    WHERE openalex_id IN ({placeholders}) AND resolved = 1""",
+                    WHERE openalex_id IN ({placeholders}) AND resolved != 0""",
                 chunk,
             ).fetchall():
                 resolved.add(row[0])

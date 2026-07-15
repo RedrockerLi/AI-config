@@ -324,9 +324,13 @@ class OpenAlexFetcher(AbstractFetcher):
         """
         unresolved = db.get_unresolved_ref_ids()
 
-        cached = db.conn.execute(
+        cached_found = db.conn.execute(
             "SELECT COUNT(*) FROM reference_work WHERE resolved = 1"
         ).fetchone()[0]
+        cached_miss = db.conn.execute(
+            "SELECT COUNT(*) FROM reference_work WHERE resolved = -1"
+        ).fetchone()[0]
+        cached = cached_found + cached_miss
 
         # Count total unique IDs across all papers
         all_ids: set[str] = set()
@@ -349,8 +353,8 @@ class OpenAlexFetcher(AbstractFetcher):
         print(
             f"  [OpenAlex] 解析参考文献:\n"
             f"    全库唯一引用ID:  {total_ids}\n"
-            f"    已解析:          {cached} 篇\n"
-            f"    去重后待解析:    {len(unresolved)} 篇 (跳过 {skip} 个已缓存)\n"
+            f"    已处理:          {cached} 篇 (查到 {cached_found}, 未查到 {cached_miss})\n"
+            f"    去重后待解析:    {len(unresolved)} 篇 (跳过 {skip} 个已处理)\n"
             f"    批次: {total_batches} (50 IDs/批, 10 credits/批)"
         )
 
