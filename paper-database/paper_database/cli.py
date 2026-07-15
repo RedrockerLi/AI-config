@@ -316,7 +316,7 @@ def paper_fetch(ctx, venue_key, year_filter):
 @click.option("--doi-only", is_flag=True, default=False,
               help="仅批量 DOI 查询 (10 credits/50 篇)，跳过昂贵的标题搜索")
 @click.option("--fetch-references", is_flag=True, default=False,
-              help="获取参考文献列表 (S2 零额外调用; OpenAlex 需二阶段 API 调用)")
+              help="解析参考文献 URL 为标题 (需额外 API credits; 不设则仅保存 URL)")
 @click.pass_context
 def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
     """补全论文元数据: 摘要、主题标签、参考文献（自动续跑，直到全部完成）."""
@@ -339,7 +339,7 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
     console.print(f"  缺参考文献:   {need_refs}")
     if not fetch_references:
         console.print(
-            f"  [dim](加 --fetch-references 可同时补参考文献)[/]"
+            f"  [dim](加 --fetch-references 可将已保存的 URL 解析为文献标题)[/]"
         )
 
     # Count how many papers need at least one thing

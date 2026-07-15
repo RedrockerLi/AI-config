@@ -101,8 +101,6 @@ class OpenAlexFetcher(AbstractFetcher):
             dict mapping dblp_key -> abstract.
         """
         results: dict[str, str] = {}
-        # paper_dblp_key → set of OpenAlex work IDs (for reference resolution)
-        paper_ref_ids: dict[str, set[str]] = {}
 
         def _save(paper, abstract, concepts=None):
             """Write to DB immediately if available, else accumulate."""
@@ -168,11 +166,13 @@ class OpenAlexFetcher(AbstractFetcher):
                             paper_id = db.get_paper_id_by_dblp_key(paper.dblp_key)
                             if paper_id:
                                 db.save_paper_topics(paper_id, "openalex", concepts)
-                    # Collect referenced_works IDs for second-phase resolution
-                    if fetch_references:
-                        ref_ids = info.get("referenced_works") or []
-                        if ref_ids:
-                            paper_ref_ids[paper.dblp_key] = set(ref_ids)
+                    # Always save referenced_works URLs (zero extra API cost)
+                    # --fetch-references controls phase-2: resolve URLs → titles
+                    ref_ids = info.get("referenced_works") or []
+                    if ref_ids and db is not None:
+                        paper_id = db.get_paper_id_by_dblp_key(paper.dblp_key)
+                        if paper_id:
+                            db.save_paper_reference_ids(paper_id, "openalex", ref_ids)
 
             if total_batches > 1:
                 print(
@@ -206,9 +206,9 @@ class OpenAlexFetcher(AbstractFetcher):
                 f"DOI-only 模式跳过"
             )
 
-        # ── Phase 2: Resolve referenced_works IDs → titles ─────
-        if fetch_references and paper_ref_ids and db is not None:
-            self._resolve_referenced_works(paper_ref_ids, db)
+        # ── Phase 2: Resolve pending reference URLs → titles ─────
+        if fetch_references and db is not None:
+            self._resolve_referenced_works(db)
 
         if papers:
             doi_count = sum(1 for p in papers if p.doi.strip())
@@ -298,49 +298,39 @@ class OpenAlexFetcher(AbstractFetcher):
 
         return results
 
-    def _resolve_referenced_works(
-        self, paper_ref_ids: dict[str, set[str]], db
-    ):
-        """Resolve OpenAlex work IDs to titles and save as paper_references.
+    def _resolve_referenced_works(self, db):
+        """Resolve pending OpenAlex reference URLs to titles.
 
-        Batch-resolves all unique referenced work IDs via the OpenAlex
-        filter endpoint (50 IDs per batch, 10 credits each).
-        Maps titles back to the citing papers via ``paper_ref_ids``.
+        Queries DB for unresolved references (external_id set, title empty),
+        batch-resolves them via OpenAlex filter endpoint (50 IDs/batch,
+        10 credits each), and updates titles in place.
         """
-        # Build reverse index: work_id → set of paper_dblp_keys that cite it
-        id_to_papers: dict[str, set[str]] = {}
-        for dblp_key, ref_ids in paper_ref_ids.items():
-            for rid in ref_ids:
-                if rid not in id_to_papers:
-                    id_to_papers[rid] = set()
-                id_to_papers[rid].add(dblp_key)
-
-        if not id_to_papers:
+        pending = db.get_pending_reference_ids()
+        if not pending:
             return
 
-        # Extract just the ID part from OpenAlex URLs (e.g., "W2753353163")
-        all_ids = list(id_to_papers.keys())
-        # Expected format: https://openalex.org/W2753353163
-        id_short_map: dict[str, str] = {}
-        for full_id in all_ids:
-            short = full_id.rstrip("/").split("/")[-1]  # "W2753353163"
-            id_short_map[short] = full_id
+        # Deduplicate by external_id
+        unique_ids = list(set(r["external_id"] for r in pending))
 
-        short_ids = list(id_short_map.keys())
+        # Extract short ID from OpenAlex URL (e.g., "W2753353163")
+        id_map: dict[str, str] = {}  # short_id → full URL
+        for full_id in unique_ids:
+            short = full_id.rstrip("/").split("/")[-1]
+            id_map[short] = full_id
+
+        short_ids = list(id_map.keys())
         total_batches = (len(short_ids) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE
 
-        if total_batches > 1:
-            print(
-                f"  [OpenAlex] 解析参考文献: {len(short_ids)} 篇, "
-                f"{total_batches} 批..."
-            )
+        print(
+            f"  [OpenAlex] 解析参考文献: {len(short_ids)} 篇待解析, "
+            f"{total_batches} 批..."
+        )
 
         resolved_count = 0
         for i in range(0, len(short_ids), self._BATCH_CHUNK_SIZE):
             chunk = short_ids[i:i + self._BATCH_CHUNK_SIZE]
             batch_num = i // self._BATCH_CHUNK_SIZE + 1
 
-            # Filter by openalex_id using pipe-delimited format
             id_filter = "|".join(chunk)
             params = self._build_params(
                 filter=f"openalex_id:{id_filter}",
@@ -354,28 +344,17 @@ class OpenAlexFetcher(AbstractFetcher):
                 continue
 
             for work in (data.get("results") or []):
-                work_id = work.get("id", "")  # full URL
+                work_id = work.get("id", "")
                 title = (work.get("title") or "").strip()
                 if not work_id or not title:
                     continue
 
-                # Find which papers cite this work
-                citing_papers = id_to_papers.get(work_id)
-                if not citing_papers:
-                    continue
-
-                for dblp_key in citing_papers:
-                    paper_id = db.get_paper_id_by_dblp_key(dblp_key)
-                    if paper_id:
-                        db.save_paper_references(
-                            paper_id, "openalex",
-                            [{"title": title, "external_id": work_id}],
-                        )
-                        resolved_count += 1
+                db.resolve_reference_title(work_id, title)
+                resolved_count += 1
 
         if total_batches > 1:
             print(
-                f"  [OpenAlex] 参考文献解析完成: {resolved_count} 条引用关系"
+                f"  [OpenAlex] 参考文献解析完成: {resolved_count} 条标题已更新"
             )
 
     def _search_by_doi(self, doi: str) -> Optional[str]:

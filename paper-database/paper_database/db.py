@@ -405,15 +405,60 @@ class Database:
         return [r["topic"] for r in rows]
 
     def get_paper_references(self, paper_id: int, limit: int = 20) -> list[str]:
-        """Get referenced paper titles for a paper, most-cited first."""
+        """Get referenced paper titles for a paper, most-cited first.
+
+        Skips unresolved references (URLs used as placeholder titles).
+        """
         rows = self.conn.execute(
             """SELECT referenced_title FROM paper_reference
-               WHERE paper_id = ?
+               WHERE paper_id = ? AND referenced_title != ''
+                 AND referenced_title NOT LIKE 'https://openalex.org/%'
                ORDER BY citation_count DESC
                LIMIT ?""",
             (paper_id, limit),
         ).fetchall()
         return [r["referenced_title"] for r in rows]
+
+    def save_paper_reference_ids(
+        self, paper_id: int, source: str, external_ids: list[str]
+    ):
+        """Save reference IDs (OpenAlex URLs) as placeholder rows.
+
+        Uses the URL itself as referenced_title placeholder — later resolved
+        to real title by _resolve_referenced_works(). INSERT OR IGNORE makes
+        this safe for re-runs.
+        """
+        if not external_ids:
+            return
+        unique_ids = list(set(external_ids))
+        self.conn.executemany(
+            """INSERT OR IGNORE INTO paper_reference
+               (paper_id, referenced_title, external_id, source)
+               VALUES (?, ?, ?, ?)""",
+            [(paper_id, rid, rid, source) for rid in unique_ids],
+        )
+        self.conn.commit()
+
+    def get_pending_reference_ids(self) -> list[dict]:
+        """Get all unresolved references (URL used as placeholder title).
+
+        Returns list of {external_id, paper_id} for phase-2 resolution.
+        """
+        rows = self.conn.execute(
+            """SELECT DISTINCT external_id, paper_id FROM paper_reference
+               WHERE referenced_title LIKE 'https://openalex.org/%'
+                 AND source = 'openalex'"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def resolve_reference_title(self, external_id: str, title: str):
+        """Update all placeholder rows with a resolved title."""
+        self.conn.execute(
+            """UPDATE paper_reference SET referenced_title = ?
+               WHERE external_id = ? AND referenced_title LIKE 'https://openalex.org/%'""",
+            (title, external_id),
+        )
+        self.conn.commit()
 
     def get_paper_by_dblp_key(self, dblp_key: str) -> Optional[dict]:
         row = self.conn.execute(
