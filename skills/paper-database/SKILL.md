@@ -73,8 +73,8 @@ version: 0.3.0
 # Step 1: 初始化 venue 表（秒级）
 cd $PAPER_DATABASE_HOME && python -m paper_database venue init
 
-# Step 2: 拉取所有论文 + 摘要（预计 30 分钟 - 2 小时）
-#   涉及 20+ venue × 多年度 = 200+ DBLP 请求 + 数千 S2/OpenAlex 摘要查询
+# Step 2: 拉取所有论文 + 元数据（预计 30 分钟 - 2 小时）
+#   涉及 20+ venue × 多年度 = 200+ DBLP 请求 + 数千 S2/OpenAlex 元数据查询
 #   建议在 tmux/screen 中运行，可随时中断后重新执行续传
 cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-all
 
@@ -83,8 +83,8 @@ cd $PAPER_DATABASE_HOME && python -m paper_database paper stats
 ```
 
 并告知用户：
-- 建议先设置 API Key 加速摘要获取（见下方 API Keys 说明）
-- 中断后重新运行会自动跳过已获取的论文和摘要
+- 建议先设置 API Key 加速元数据获取（见下方 API Keys 说明）
+- 中断后重新运行会自动跳过已获取的论文和元数据
 - `fetch-all` = `paper fetch` + `paper enrich`，可拆开执行
 
 ### 场景2: 更新特定会议的最新论文
