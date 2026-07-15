@@ -166,6 +166,19 @@ def paper_fetch(ctx, venue_key, year_filter):
             sys.exit(1)
         venues = [v]
 
+    # Count what will be processed
+    total_years = sum(
+        len(range(
+            year_filter if year_filter else v.year_start,
+            (year_filter if year_filter else v.year_end) + 1
+        ))
+        for v in venues
+    )
+    console.print(
+        f"\n[bold]从 DBLP 拉取论文列表[/]\n"
+        f"  {len(venues)} venues, {total_years} years\n"
+    )
+
     total_papers = 0
     skipped_years = 0
 
@@ -521,10 +534,11 @@ def paper_fetch_abstracts(ctx, limit, stop_after, doi_only, fetch_references):
 @click.option("--year", "-y", "year_filter", type=int, default=None, help="只拉取指定年份")
 @click.pass_context
 def paper_fetch_all(ctx, venue_key, year_filter):
-    """一键拉取论文列表 + 摘要."""
-    # First, fetch paper list
+    """拉取论文列表 + 补全元数据 (摘要、主题标签)."""
+    # Step 1: fetch paper list from DBLP
     ctx.invoke(paper_fetch, venue_key=venue_key, year_filter=year_filter)
-    # Then, enrich metadata
+    # Step 2: enrich metadata
+    console.print("\n[bold]── 补全元数据 ──[/]")
     ctx.invoke(paper_enrich)
 
 
@@ -536,11 +550,15 @@ def paper_stats(ctx):
     stats = db.paper_stats()
 
     console.print(f"\n[bold]论文统计[/]")
-    abstract_pct = stats['with_abstract'] / max(stats['total'], 1) * 100
+    total = stats['total']
+    abs_pct = stats['with_abstract'] / max(total, 1) * 100
+    top_pct = stats['with_topics'] / max(total, 1) * 100
+    ref_pct = stats['with_refs'] / max(total, 1) * 100
     console.print(
-        f"  总计: {stats['total']} 篇  |  "
-        f"有摘要: {stats['with_abstract']} 篇 "
-        f"([green]{abstract_pct:.1f}%[/])"
+        f"  总计: {total} 篇\n"
+        f"  有摘要: {stats['with_abstract']} 篇 ([green]{abs_pct:.1f}%[/])\n"
+        f"  有主题标签: {stats['with_topics']} 篇 ([green]{top_pct:.1f}%[/])\n"
+        f"  有参考文献: {stats['with_refs']} 篇 ([green]{ref_pct:.1f}%[/])"
     )
 
     table = RichTable(title="按 Venue + Year 统计 (CCF 排序)")

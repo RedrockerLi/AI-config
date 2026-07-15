@@ -574,7 +574,7 @@ class Database:
         return [dict(r) for r in rows]
 
     def paper_stats(self) -> dict:
-        """Return paper statistics grouped by venue + year, with abstract counts."""
+        """Return paper statistics grouped by venue + year, with enrichment counts."""
         rows = self.conn.execute(
             """SELECT v.key as venue_key, v.name as venue_name,
                       v.ccf_rank,
@@ -587,9 +587,13 @@ class Database:
         ).fetchall()
         total = self.count_papers()
         with_abstract = self.count_papers_with_abstract()
+        with_topics = total - self.count_papers_without_topics()
+        with_refs = total - self.count_papers_without_references()
         return {
             "total": total,
             "with_abstract": with_abstract,
+            "with_topics": with_topics,
+            "with_refs": with_refs,
             "by_venue_year": [dict(r) for r in rows],
         }
 

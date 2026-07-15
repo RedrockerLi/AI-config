@@ -141,6 +141,8 @@ class OpenAlexFetcher(AbstractFetcher):
             total_batches = (len(dois) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE
             matched_dois: set[str] = set()
             batch_saved = 0
+            topics_saved = 0
+            ref_urls_saved = 0
 
             for i in range(0, len(dois), self._BATCH_CHUNK_SIZE):
                 chunk = dois[i:i + self._BATCH_CHUNK_SIZE]
@@ -160,12 +162,15 @@ class OpenAlexFetcher(AbstractFetcher):
                         _save(paper, abstract, concepts=concepts)
                         batch_saved += 1
                         matched_dois.add(doi)
+                        if concepts:
+                            topics_saved += 1
                     elif concepts:
                         # Save topics even if no abstract
                         if db is not None:
                             paper_id = db.get_paper_id_by_dblp_key(paper.dblp_key)
                             if paper_id:
                                 db.save_paper_topics(paper_id, "openalex", concepts)
+                                topics_saved += 1
                     # Always save referenced_works URLs (zero extra API cost)
                     # --fetch-references controls phase-2: resolve URLs → titles
                     ref_ids = info.get("referenced_works") or []
@@ -173,11 +178,14 @@ class OpenAlexFetcher(AbstractFetcher):
                         paper_id = db.get_paper_id_by_dblp_key(paper.dblp_key)
                         if paper_id:
                             db.save_paper_reference_ids(paper_id, "openalex", ref_ids)
+                            ref_urls_saved += 1
 
             if total_batches > 1:
                 print(
-                    f"  [OpenAlex] 批量完成: {len(matched_dois)}/{len(doi_to_paper)} "
-                    f"DOI 命中, 已保存 {batch_saved} 篇"
+                    f"  [OpenAlex] DOI 批量完成: "
+                    f"摘要 {batch_saved} | 主题标签 {topics_saved} | "
+                    f"引用URL {ref_urls_saved} 篇 "
+                    f"({len(matched_dois)}/{len(doi_to_paper)} DOI 命中)"
                 )
 
             # Unmatched DOIs -> title fallback
@@ -216,7 +224,8 @@ class OpenAlexFetcher(AbstractFetcher):
             if fetch_references:
                 mode += "+refs"
             print(
-                f"  [OpenAlex] 本批完成 ({mode}): {len(results)} 篇摘要 "
+                f"  [OpenAlex] 本批完成 ({mode}): "
+                f"摘要 {len(results)} 篇 "
                 f"({doi_count} DOI, {len(papers) - doi_count} 标题搜索)"
             )
 
@@ -256,18 +265,20 @@ class OpenAlexFetcher(AbstractFetcher):
         )
         if data is None:
             if total_batches > 1:
-                print("0 篇")
+                print("✗ 失败")
             return results
 
         works = data.get("results", [])
-        with_abstract = sum(
+        n_abstracts = sum(
             1 for w in works
             if w.get("abstract_inverted_index")
             and isinstance(w["abstract_inverted_index"], dict)
             and len(w["abstract_inverted_index"]) > 0
         )
+        n_concepts = sum(1 for w in works if w.get("concepts"))
+        n_refs = sum(len(w.get("referenced_works") or []) for w in works)
         if total_batches > 1:
-            print(f"{len(works)} 篇 ({with_abstract} 有摘要)")
+            print(f"{len(works)} hits | +摘要:{n_abstracts} +主题:{n_concepts} +引用URL:{n_refs}")
 
         for work in works:
             work_doi = (work.get("doi") or "").strip()
