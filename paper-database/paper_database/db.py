@@ -64,19 +64,19 @@ CREATE INDEX IF NOT EXISTS idx_pt_paper ON paper_topic(paper_id);
 
 CREATE TABLE IF NOT EXISTS paper_reference (
     paper_id INTEGER NOT NULL REFERENCES paper(id),
-    referenced_title TEXT NOT NULL,
-    external_id TEXT,
+    openalex_id TEXT DEFAULT '',
+    s2_title TEXT DEFAULT '',
     source TEXT NOT NULL,
     citation_count INTEGER DEFAULT 0,
-    PRIMARY KEY (paper_id, referenced_title, source)
+    PRIMARY KEY (paper_id, openalex_id, s2_title)
 );
 CREATE INDEX IF NOT EXISTS idx_pr_paper ON paper_reference(paper_id);
+CREATE INDEX IF NOT EXISTS idx_pr_oa ON paper_reference(openalex_id);
 
 CREATE TABLE IF NOT EXISTS reference_work (
-    external_id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'openalex',
-    resolved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    openalex_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    resolved INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -146,24 +146,34 @@ CREATE INDEX IF NOT EXISTS idx_pt_paper ON paper_topic(paper_id);
 
 CREATE TABLE IF NOT EXISTS paper_reference (
     paper_id INTEGER NOT NULL REFERENCES paper(id),
-    referenced_title TEXT NOT NULL,
-    external_id TEXT,
+    openalex_id TEXT DEFAULT '',
+    s2_title TEXT DEFAULT '',
     source TEXT NOT NULL,
     citation_count INTEGER DEFAULT 0,
-    PRIMARY KEY (paper_id, referenced_title, source)
+    PRIMARY KEY (paper_id, openalex_id, s2_title)
 );
 CREATE INDEX IF NOT EXISTS idx_pr_paper ON paper_reference(paper_id);
+CREATE INDEX IF NOT EXISTS idx_pr_oa ON paper_reference(openalex_id);
 
 CREATE TABLE IF NOT EXISTS reference_work (
-    external_id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'openalex',
-    resolved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    openalex_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    resolved INTEGER NOT NULL DEFAULT 0
 );
 """
 
 
 # ── Helpers ──────────────────────────────────────────────────────
+
+# URL conversion
+def extract_openalex_id(url: str) -> str:
+    """'https://openalex.org/W123' → 'W123'"""
+    return url.rstrip("/").split("/")[-1]
+
+def build_openalex_url(short_id: str) -> str:
+    """'W123' → 'https://openalex.org/W123'"""
+    return f"https://openalex.org/{short_id}"
+
 
 def _survey_result_columns(topic: TopicConfig) -> list[str]:
     """Return field names from output.columns that become survey_result columns.
@@ -390,7 +400,7 @@ class Database:
     def save_paper_references(
         self, paper_id: int, source: str, refs: list[dict]
     ):
-        """Save references for a paper. Each ref: {title, external_id, citation_count}.
+        """Save S2 references. Each ref: {title, citation_count}.
 
         Uses INSERT OR IGNORE — safe for re-runs.
         """
@@ -398,13 +408,10 @@ class Database:
             return
         self.conn.executemany(
             """INSERT OR IGNORE INTO paper_reference
-               (paper_id, referenced_title, external_id, source, citation_count)
-               VALUES (?, ?, ?, ?, ?)""",
-            [
-                (paper_id, r["title"], r.get("external_id", ""),
-                 source, r.get("citation_count", 0))
-                for r in refs
-            ],
+               (paper_id, openalex_id, s2_title, source, citation_count)
+               VALUES (?, '', ?, ?, ?)""",
+            [(paper_id, r["title"], source, r.get("citation_count", 0))
+             for r in refs],
         )
         self.conn.commit()
 
@@ -419,88 +426,81 @@ class Database:
         return [r["topic"] for r in rows]
 
     def get_paper_references(self, paper_id: int, limit: int = 20) -> list[str]:
-        """Get referenced paper titles for a paper, most-cited first.
+        """Get resolved reference titles for a paper.
 
-        Resolves placeholder URLs via reference_work cache. Skips
-        references that are still unresolved.
+        OpenAlex first: JOIN reference_work WHERE resolved=1.
+        S2 fallback: s2_title from paper_reference.
         """
+        # 1. OpenAlex (优先)
         rows = self.conn.execute(
-            """SELECT COALESCE(rw.title, pr.referenced_title) as title
-               FROM paper_reference pr
-               LEFT JOIN reference_work rw ON pr.external_id = rw.external_id
-               WHERE pr.paper_id = ?
-                 AND (rw.title IS NOT NULL
-                      OR (pr.referenced_title != ''
-                          AND pr.referenced_title NOT LIKE 'https://openalex.org/%'))
-               ORDER BY pr.citation_count DESC
+            """SELECT rw.title FROM paper_reference pr
+               JOIN reference_work rw ON pr.openalex_id = rw.openalex_id
+               WHERE pr.paper_id = ? AND rw.resolved = 1 AND rw.title != ''
                LIMIT ?""",
             (paper_id, limit),
         ).fetchall()
-        return [r["title"] for r in rows]
+        if rows:
+            return [r[0] for r in rows]
+
+        # 2. S2 fallback
+        rows = self.conn.execute(
+            """SELECT DISTINCT s2_title FROM paper_reference
+               WHERE paper_id = ? AND s2_title != ''
+               LIMIT ?""",
+            (paper_id, limit),
+        ).fetchall()
+        return [r[0] for r in rows]
 
     def save_paper_reference_ids(
-        self, paper_id: int, source: str, external_ids: list[str]
+        self, paper_id: int, source: str, openalex_ids: list[str]
     ):
-        """Save reference IDs (OpenAlex URLs) as placeholder rows.
+        """Save OpenAlex reference short IDs (e.g. 'W1234567890').
 
-        Uses the URL itself as referenced_title placeholder — later resolved
-        to real title by _resolve_referenced_works(). INSERT OR IGNORE makes
-        this safe for re-runs.
+        INSERT OR IGNORE — safe for re-runs.
         """
-        if not external_ids:
+        if not openalex_ids:
             return
-        unique_ids = list(set(external_ids))
+        unique_ids = list(set(openalex_ids))
         self.conn.executemany(
             """INSERT OR IGNORE INTO paper_reference
-               (paper_id, referenced_title, external_id, source)
-               VALUES (?, ?, ?, ?)""",
-            [(paper_id, rid, rid, source) for rid in unique_ids],
+               (paper_id, openalex_id, s2_title, source)
+               VALUES (?, ?, '', ?)""",
+            [(paper_id, rid, source) for rid in unique_ids if rid],
         )
         self.conn.commit()
 
-    # ── reference_work cache (dedup across all papers) ─────────
+    # ── reference_work (ID → title dictionary) ─────────────────
 
     def save_reference_works(self, works: list[dict]):
-        """Batch insert resolved reference works. Dedup by external_id."""
+        """Batch insert/update reference_work.
+
+        Each work: {openalex_id, title, resolved}.
+        resolved=1 for successfully fetched, 0 for not-found.
+        """
         if not works:
             return
         self.conn.executemany(
-            """INSERT OR IGNORE INTO reference_work (external_id, title, source)
+            """INSERT OR REPLACE INTO reference_work (openalex_id, title, resolved)
                VALUES (?, ?, ?)""",
-            [(w["external_id"], w["title"], w.get("source", "openalex")) for w in works],
+            [(w["openalex_id"], w.get("title", ""), w.get("resolved", 0))
+             for w in works],
         )
         self.conn.commit()
 
     def get_unresolved_ref_ids(self) -> list[str]:
-        """Get external_ids in paper_reference (placeholders) NOT yet cached.
+        """Get OpenAlex IDs in paper_reference NOT yet in reference_work as resolved.
 
-        Only returns IDs not already in reference_work — avoids re-fetching.
+        Returns short IDs like 'W1234567890'.
         """
         rows = self.conn.execute(
-            """SELECT DISTINCT pr.external_id FROM paper_reference pr
-               WHERE pr.referenced_title LIKE 'https://openalex.org/%'
+            """SELECT DISTINCT pr.openalex_id FROM paper_reference pr
+               WHERE pr.openalex_id != ''
                  AND pr.source = 'openalex'
-                 AND pr.external_id NOT IN (SELECT external_id FROM reference_work)"""
+                 AND pr.openalex_id NOT IN (
+                     SELECT openalex_id FROM reference_work WHERE resolved = 1
+                 )"""
         ).fetchall()
-        return [r["external_id"] for r in rows]
-
-    def resolve_paper_references(self) -> int:
-        """UPDATE paper_reference from reference_work cache.
-
-        Replaces placeholder URLs with resolved titles for all rows
-        whose external_id exists in reference_work.
-        Returns number of rows updated.
-        """
-        cur = self.conn.execute(
-            """UPDATE paper_reference SET referenced_title = (
-                   SELECT rw.title FROM reference_work rw
-                   WHERE rw.external_id = paper_reference.external_id
-               )
-               WHERE referenced_title LIKE 'https://openalex.org/%'
-                 AND external_id IN (SELECT external_id FROM reference_work)"""
-        )
-        self.conn.commit()
-        return cur.rowcount
+        return [r[0] for r in rows]
 
     def get_paper_by_dblp_key(self, dblp_key: str) -> Optional[dict]:
         row = self.conn.execute(

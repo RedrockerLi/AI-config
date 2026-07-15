@@ -141,20 +141,21 @@ cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-all --venue <ven
 
 | Key | 用途 | 获取地址 | 推荐度 |
 |-----|------|---------|--------|
-| `S2_API_KEY` | Semantic Scholar — DOI 批量(500/批) + 标题搜索 | https://www.semanticscholar.org/product/api | 推荐 |
-| `OPENALEX_API_KEY` | OpenAlex — DOI 批量查询（50篇/批, 10 credits/批） | https://openalex.org/settings/api | 强烈推荐 |
+| `OPENALEX_API_KEY` | OpenAlex — 摘要+主题+参考文献ID (DOI批量50/批, 10 credits/批) | https://openalex.org/settings/api | 强烈推荐 |
+| `S2_API_KEY` | Semantic Scholar — 摘要+参考文献标题 (DOI批量500/批) | https://www.semanticscholar.org/product/api | 可选补充 |
 
-摘要获取流程：**Semantic Scholar (Phase 1)** → **OpenAlex 批量 (Phase 2)** 兜底。
-OpenAlex 无 API Key 每天仅 100 credits（~10 次批量查询），强烈建议申请免费 Key。
+流程：**OpenAlex (主)** → **Semantic Scholar (补充)**。
+无 API Key 也可用，OpenAlex 每天 100 credits（~10 次批量查询），强烈建议申请免费 Key。
 
 ```bash
-export S2_API_KEY="your-key"
 export OPENALEX_API_KEY="your-key"
+export S2_API_KEY="your-key"          # 可选
 ```
 
 ## 技术要点
 
-- **数据来源**：DBLP XML（论文列表）→ Semantic Scholar（摘要+references优先）→ OpenAlex（摘要+topics+refs补充）
+- **数据来源**：DBLP XML（论文列表）→ OpenAlex（主：摘要+topics+refs ID）→ Semantic Scholar（补充：摘要+refs 标题）
+- **参考文献存储**：paper_reference 存 `W<ID>` 短 ID + S2 标题分列；reference_work 作 ID→标题字典表；prompt 生成时 OpenAlex JOIN 优先，S2 fallback
 - **`enrich` 自动检测缺失**：摘要、主题标签、参考文献三种缺失自动识别，已完整的论文自动跳过
 - **多卷会议**：DBLP fetcher 自动从 `index.xml` 发现多卷（如 ASPLOS 2023 有 4 卷），无需手动处理
 - **自适应限流**：OpenAlex 遇 429 自动降速（延迟翻倍），连续 3 次 429 后停止重试

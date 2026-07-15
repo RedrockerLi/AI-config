@@ -197,16 +197,16 @@ python -m paper_database survey classify -s 1 --debug-paper "CGRA" --deliberate 
 
 `enrich` 命令自动检测并补全所有缺失的元数据：摘要、主题标签、参考文献。
 
-流程：**Semantic Scholar (优先)** → **OpenAlex (补充)**。
+流程：**OpenAlex (主)** → **Semantic Scholar (S2_API_KEY 设后补充)**。
 
 | Key | 用途 | 获取 | 推荐度 |
 |-----|------|------|--------|
-| `S2_API_KEY` | Semantic Scholar — DOI 批量(500/批) + 标题搜索 + references | https://www.semanticscholar.org/product/api | 推荐 |
-| `OPENALEX_API_KEY` | OpenAlex — DOI 批量查询（50 篇/批, 10 credits/批）+ concepts | https://openalex.org/settings/api | 申请方便，**强烈推荐** |
+| `OPENALEX_API_KEY` | OpenAlex — 摘要 + concepts (主题标签) + referenced_works (参考文献ID) | https://openalex.org/settings/api | **强烈推荐** |
+| `S2_API_KEY` | Semantic Scholar — 摘要 + references (直接给标题) | https://www.semanticscholar.org/product/api | 可选补充 |
 
 ```bash
-export S2_API_KEY="your-key"
 export OPENALEX_API_KEY="your-key"
+export S2_API_KEY="your-key"          # 可选
 ```
 
 ### enrich 使用
@@ -229,8 +229,8 @@ python -m paper_database paper enrich --doi-only
 | 步骤 | API | 获取内容 | 备注 |
 |------|-----|---------|------|
 | ① 论文列表 | DBLP XML 导出 | title, authors, year, doi, dblp_key | 比搜索 API 更准确 |
-| ② 摘要 + refs(优先) | Semantic Scholar | abstract, citations, references | 支持 DOI 批量 (500/批) |
-| ③ 摘要 + topics + refs(补充) | OpenAlex | abstract (倒排索引), concepts, referenced_works | DOI 批量 50 批, 10 credits/批 |
+| ② 摘要 + topics + refs(主) | OpenAlex | abstract, concepts (主题标签), referenced_works (参考文献 ID) | DOI 批量 50/批, 10 credits/批 |
+| ③ 摘要 + refs(补充) | Semantic Scholar | abstract, references (直接给标题) | 需 S2_API_KEY, DOI 批量 500/批 |
 
 ### enrich 两种模式
 

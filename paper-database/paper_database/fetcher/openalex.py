@@ -26,6 +26,17 @@ import httpx
 from paper_database.fetcher.base import AbstractFetcher, PaperMeta, VenueMeta
 
 
+# URL ↔ short ID conversion (used by OpenAlex fetcher only)
+def _extract_oa_id(url: str) -> str:
+    """'https://openalex.org/W123' → 'W123'"""
+    return url.rstrip("/").split("/")[-1]
+
+
+def _build_oa_url(short_id: str) -> str:
+    """'W123' → 'https://openalex.org/W123'"""
+    return f"https://openalex.org/{short_id}"
+
+
 class OpenAlexFetcher(AbstractFetcher):
     """Fetches abstracts from OpenAlex API as fallback when Semantic Scholar fails.
 
@@ -295,74 +306,62 @@ class OpenAlexFetcher(AbstractFetcher):
                     })
             concepts.sort(key=lambda x: x["score"], reverse=True)
 
+            # Extract short IDs from full URLs
+            ref_ids = [_extract_oa_id(u) for u in (work.get("referenced_works") or [])]
+
             results[work_doi] = {
                 "abstract": self._extract_abstract(work) or "",
                 "doi": work_doi,
                 "title": work.get("title", "") or "",
                 "concepts": concepts,
-                "referenced_works": work.get("referenced_works") or [],
+                "referenced_works": ref_ids,
             }
 
         return results
 
     def _resolve_referenced_works(self, db):
-        """Resolve pending reference URLs to titles via reference_work cache.
+        """Resolve OpenAlex short IDs to titles via reference_work.
 
-        1. Query paper_reference for placeholder URLs not yet in reference_work
+        1. Query paper_reference for IDs not yet resolved in reference_work
         2. Batch-resolve via OpenAlex API (50 IDs/batch, 10 credits each)
-        3. Store resolved titles in reference_work (global dedup cache)
-        4. UPDATE paper_reference from reference_work
+        3. Store in reference_work (resolved=1) or mark not-found (resolved=0)
         """
-        # Count total placeholder rows in paper_reference
-        total_placeholders = db.conn.execute(
-            """SELECT COUNT(*) FROM paper_reference
-               WHERE referenced_title LIKE 'https://openalex.org/%'"""
+        total_ids = db.conn.execute(
+            """SELECT COUNT(DISTINCT openalex_id) FROM paper_reference
+               WHERE openalex_id != '' AND source = 'openalex'"""
         ).fetchone()[0]
 
-        cached_count = db.conn.execute(
-            """SELECT COUNT(*) FROM reference_work"""
+        cached = db.conn.execute(
+            """SELECT COUNT(*) FROM reference_work WHERE resolved = 1"""
         ).fetchone()[0]
 
         unresolved = db.get_unresolved_ref_ids()
-        skip_count = total_placeholders - len(unresolved)  # already cached
+        skip = total_ids - len(unresolved)
 
         if not unresolved:
             print(
-                f"  [OpenAlex] 参考文献: {total_placeholders} 个占位URL, "
-                f"全部已缓存 ({cached_count} 篇), 跳过 API 查询"
+                f"  [OpenAlex] 参考文献: {total_ids} 个唯一ID, "
+                f"全部已解析 ({cached} 篇), 跳过"
             )
-            # Still refresh paper_reference from cache (new papers may have been added)
-            updated = db.resolve_paper_references()
-            if updated > 0:
-                print(f"  [OpenAlex] 从缓存更新 paper_reference: {updated} 行")
             return
 
-        # Dedup count
+        total_batches = (len(unresolved) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE
         print(
             f"  [OpenAlex] 解析参考文献:\n"
-            f"    paper_reference 占位URL: {total_placeholders}\n"
-            f"    reference_work 已缓存:  {cached_count} 篇\n"
-            f"    去重后待解析:          {len(unresolved)} 篇 "
-            f"(跳过 {skip_count} 个已缓存)\n"
-            f"    批次: { (len(unresolved) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE } "
-            f"(50 IDs/批, 10 credits/批)"
+            f"    paper_reference 唯一ID: {total_ids}\n"
+            f"    reference_work 已解析:  {cached} 篇\n"
+            f"    去重后待解析:          {len(unresolved)} 篇 (跳过 {skip} 个已缓存)\n"
+            f"    批次: {total_batches} (50 IDs/批, 10 credits/批)"
         )
 
-        # Extract short ID from OpenAlex URL (e.g., "W2753353163")
-        id_map: dict[str, str] = {}  # short_id → full URL
-        for full_id in unresolved:
-            short = full_id.rstrip("/").split("/")[-1]
-            id_map[short] = full_id
-
-        short_ids = list(id_map.keys())
-        total_batches = (len(short_ids) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE
-
         resolved = 0
-        for i in range(0, len(short_ids), self._BATCH_CHUNK_SIZE):
-            chunk = short_ids[i:i + self._BATCH_CHUNK_SIZE]
+        not_found = 0
+        for i in range(0, len(unresolved), self._BATCH_CHUNK_SIZE):
+            chunk = unresolved[i:i + self._BATCH_CHUNK_SIZE]
             batch_num = i // self._BATCH_CHUNK_SIZE + 1
 
-            id_filter = "|".join(chunk)
+            # Build full URLs for API call
+            id_filter = "|".join(_build_oa_url(oid) for oid in chunk)
             params = self._build_params(
                 filter=f"openalex_id:{id_filter}",
                 per_page=200,
@@ -374,34 +373,36 @@ class OpenAlexFetcher(AbstractFetcher):
             if data is None:
                 continue
 
+            found_ids: set[str] = set()
             batch_works = []
             for work in (data.get("results") or []):
-                work_id = work.get("id", "")
+                work_url = work.get("id", "")
                 title = (work.get("title") or "").strip()
-                if work_id and title:
-                    batch_works.append({"external_id": work_id, "title": title})
+                if work_url and title:
+                    oid = _extract_oa_id(work_url)
+                    batch_works.append({"openalex_id": oid, "title": title, "resolved": 1})
+                    found_ids.add(oid)
+
+            # Mark not-found IDs
+            for oid in chunk:
+                if oid not in found_ids:
+                    batch_works.append({"openalex_id": oid, "title": "", "resolved": 0})
+                    not_found += 1
 
             if batch_works:
                 db.save_reference_works(batch_works)
-                resolved += len(batch_works)
+                resolved += len([w for w in batch_works if w["resolved"] == 1])
 
-            # Progress: same style as DOI batch output
-            n_hits = len(batch_works) if batch_works else 0
+            n_hits = len([w for w in batch_works if w["resolved"] == 1])
             print(
                 f"  [OpenAlex] refs 批次 {batch_num}/{total_batches} "
                 f"({len(chunk)} IDs)... {n_hits} hits",
                 flush=True,
             )
 
-        # Update paper_reference titles from cache
-        updated = 0
-        if resolved > 0:
-            updated = db.resolve_paper_references()
-
         print(
-            f"  [OpenAlex] 解析完成: "
-            f"reference_work +{resolved} 篇 | "
-            f"paper_reference 更新 {updated} 行"
+            f"  [OpenAlex] 解析完成: 查到 {resolved} 篇, "
+            f"未查到 {not_found} 篇"
         )
 
     def _search_by_doi(self, doi: str) -> Optional[str]:

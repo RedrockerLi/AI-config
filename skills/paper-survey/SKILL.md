@@ -256,7 +256,7 @@ JSON 中**必须包含** `"include": true/false`。用户无需在 `topics.yaml`
 ## 技术要点
 
 - **分类实现**：通过 `httpx.AsyncClient` 并发调用 LLM API（provider 由 `config/classifier.yaml` 配置），采用 Claim-based Queue + Worker 模式：feeder 原子 claim 未分类论文 → 放入队列 → worker 分类后标记为 classified，杜绝重复分类
-- **增强输入**：分类 prompt 不仅包含标题+摘要，还包括论文主题标签（来自 OpenAlex concepts）和参考文献（来自 S2/OpenAlex），帮助模型判断论文的研究脉络
+- **增强输入**：分类 prompt 含标题+摘要+关键词（OpenAlex concepts）+ 参考文献标题（OpenAlex JOIN 优先，S2 fallback）
 - **磋商投票**：`--deliberate N` 每篇论文并行 N 轮 → 多数投票聚合（include + 分类字段），降低 LLM 随机性
 - **内存控制**：队列最多缓存 `2 × max_concurrency` 篇论文，feeder 按需补充
 - **耗时计算**：总耗时 ≈ ceil(论文数 / max_concurrency) × 每篇 API 响应时间。每篇约 1-2 秒，2000 篇 / 32 并发 ≈ 1-1.5 分钟（实际受限于 API 速率）

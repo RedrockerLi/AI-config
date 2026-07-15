@@ -372,9 +372,9 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
     s2_has_key = bool(os.environ.get("S2_API_KEY"))
     oa = OpenAlexFetcher()
 
-    # ── Fast path: --fetch-references → just resolve, skip DOI batch ─
-    if fetch_references and not s2_has_key:
-        console.print("\n[bold]解析参考文献[/] (从已保存的 URL)...")
+    # ── Fast path: --fetch-references → just resolve OA ref URLs ─
+    if fetch_references:
+        console.print("\n[bold]解析参考文献[/] (OpenAlex ID → 标题)...")
         oa._resolve_referenced_works(db)
         final_nr = db.count_papers_without_references()
         console.print(f"\n[green]✓[/] 完成! 剩余缺引用: {final_nr}")
@@ -436,47 +436,45 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
             for row in papers_batch
         ]
 
-        batch_s2 = 0
         batch_oa = 0
+        batch_s2 = 0
         batch_failed = 0
 
-        # ── Semantic Scholar (需 API key) ────────────────────────
-        s2_results: dict = {}
-        if s2_has_key:
+        # ── OpenAlex (主) ─────────────────────────────────────
+        oa_results: dict = {}
+        doi_count = sum(1 for p in all_papers if p.doi.strip())
+        console.print(
+            f"\n[bold]OpenAlex[/] "
+            f"({doi_count} 篇有 DOI → 批量查询, "
+            f"{len(all_papers) - doi_count} 篇标题搜索)"
+        )
+        oa_results = oa.fetch_abstracts_batch(
+            all_papers, db=db, doi_only=doi_only,
+        )
+        batch_oa += len(oa_results)
+        console.print(f"  OpenAlex 成功: {batch_oa} 篇")
+
+        # ── Semantic Scholar 补充 ─────────────────────────────
+        remaining_papers = [p for p in all_papers if p.dblp_key not in oa_results]
+        if remaining_papers and s2_has_key:
             if s2 is None:
                 s2 = SemanticScholarFetcher()
-            doi_count = sum(1 for p in all_papers if p.doi.strip())
-            console.print(
-                f"\n[bold]Semantic Scholar[/] "
-                f"({doi_count} 篇有 DOI → batch, 其余标题搜索)"
-            )
-            s2_results = s2.fetch_abstracts_batch(all_papers, db=db)
-            batch_s2 += len(s2_results)
-            console.print(f"  S2 成功: {batch_s2} 篇")
-        else:
-            console.print(
-                "[dim]未设置 S2_API_KEY，跳过 Semantic Scholar[/]"
-            )
-
-        # ── OpenAlex 补充获取 ──────────────────────────────────
-        remaining_papers = [p for p in all_papers if p.dblp_key not in s2_results]
-        if remaining_papers:
             doi_count = sum(1 for p in remaining_papers if p.doi.strip())
             console.print(
-                f"\n[bold]OpenAlex 补充获取[/] ({len(remaining_papers)} 篇, "
-                f"{doi_count} 篇有 DOI → 批量查询, "
-                f"{len(remaining_papers) - doi_count} 篇标题搜索)"
+                f"\n[bold]Semantic Scholar 补充[/] ({len(remaining_papers)} 篇, "
+                f"{doi_count} 篇有 DOI → batch)"
             )
-
-            oa_results = oa.fetch_abstracts_batch(
-                remaining_papers, db=db, doi_only=doi_only,
-            )
-
-            batch_oa += len(oa_results)
-            batch_failed = len(remaining_papers) - len(oa_results)
+            s2_results = s2.fetch_abstracts_batch(remaining_papers, db=db)
+            batch_s2 += len(s2_results)
+            batch_failed = len(remaining_papers) - len(s2_results)
             console.print(
-                f"  OpenAlex 成功: {batch_oa} 篇"
+                f"  S2 成功: {batch_s2} 篇"
                 + (f", 失败: {batch_failed} 篇" if batch_failed else "")
+            )
+        elif remaining_papers and not s2_has_key:
+            batch_failed = len(remaining_papers)
+            console.print(
+                f"  [dim]未设置 S2_API_KEY, {batch_failed} 篇跳过[/]"
             )
 
         total_s2 += batch_s2
