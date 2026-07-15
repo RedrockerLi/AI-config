@@ -310,22 +310,21 @@ class OpenAlexFetcher(AbstractFetcher):
         return results
 
     def _resolve_referenced_works(self, db):
-        """Resolve pending OpenAlex reference URLs to titles.
+        """Resolve pending reference URLs to titles via reference_work cache.
 
-        Queries DB for unresolved references (external_id set, title empty),
-        batch-resolves them via OpenAlex filter endpoint (50 IDs/batch,
-        10 credits each), and updates titles in place.
+        1. Query paper_reference for placeholder URLs not yet in reference_work
+        2. Batch-resolve via OpenAlex API (50 IDs/batch, 10 credits each)
+        3. Store resolved titles in reference_work (global dedup cache)
+        4. UPDATE paper_reference from reference_work
         """
-        pending = db.get_pending_reference_ids()
-        if not pending:
+        unresolved = db.get_unresolved_ref_ids()
+        if not unresolved:
+            print("  [OpenAlex] 参考文献: 全部已缓存，跳过 API 查询")
             return
-
-        # Deduplicate by external_id
-        unique_ids = list(set(r["external_id"] for r in pending))
 
         # Extract short ID from OpenAlex URL (e.g., "W2753353163")
         id_map: dict[str, str] = {}  # short_id → full URL
-        for full_id in unique_ids:
+        for full_id in unresolved:
             short = full_id.rstrip("/").split("/")[-1]
             id_map[short] = full_id
 
@@ -333,11 +332,11 @@ class OpenAlexFetcher(AbstractFetcher):
         total_batches = (len(short_ids) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE
 
         print(
-            f"  [OpenAlex] 解析参考文献: {len(short_ids)} 篇待解析, "
-            f"{total_batches} 批..."
+            f"  [OpenAlex] 解析参考文献: {len(short_ids)} 篇待解析 "
+            f"({total_batches} 批, 10 credits/批)..."
         )
 
-        resolved_count = 0
+        resolved = 0
         for i in range(0, len(short_ids), self._BATCH_CHUNK_SIZE):
             chunk = short_ids[i:i + self._BATCH_CHUNK_SIZE]
             batch_num = i // self._BATCH_CHUNK_SIZE + 1
@@ -354,19 +353,25 @@ class OpenAlexFetcher(AbstractFetcher):
             if data is None:
                 continue
 
+            batch_works = []
             for work in (data.get("results") or []):
                 work_id = work.get("id", "")
                 title = (work.get("title") or "").strip()
-                if not work_id or not title:
-                    continue
+                if work_id and title:
+                    batch_works.append({"external_id": work_id, "title": title})
 
-                db.resolve_reference_title(work_id, title)
-                resolved_count += 1
+            if batch_works:
+                db.save_reference_works(batch_works)
+                resolved += len(batch_works)
 
-        if total_batches > 1:
-            print(
-                f"  [OpenAlex] 参考文献解析完成: {resolved_count} 条标题已更新"
-            )
+        # Update paper_reference titles from cache
+        if resolved > 0:
+            db.resolve_paper_references()
+
+        print(
+            f"  [OpenAlex] 参考文献解析完成: "
+            f"本次解析 {resolved} 篇, 缓存命中 {len(unresolved) - resolved} 篇"
+        )
 
     def _search_by_doi(self, doi: str) -> Optional[str]:
         """Search OpenAlex by DOI."""

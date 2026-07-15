@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS paper_reference (
     PRIMARY KEY (paper_id, referenced_title, source)
 );
 CREATE INDEX IF NOT EXISTS idx_pr_paper ON paper_reference(paper_id);
+
+CREATE TABLE IF NOT EXISTS reference_work (
+    external_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'openalex',
+    resolved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 SURVEY_SCHEMA = """
@@ -146,6 +153,13 @@ CREATE TABLE IF NOT EXISTS paper_reference (
     PRIMARY KEY (paper_id, referenced_title, source)
 );
 CREATE INDEX IF NOT EXISTS idx_pr_paper ON paper_reference(paper_id);
+
+CREATE TABLE IF NOT EXISTS reference_work (
+    external_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'openalex',
+    resolved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -407,17 +421,22 @@ class Database:
     def get_paper_references(self, paper_id: int, limit: int = 20) -> list[str]:
         """Get referenced paper titles for a paper, most-cited first.
 
-        Skips unresolved references (URLs used as placeholder titles).
+        Resolves placeholder URLs via reference_work cache. Skips
+        references that are still unresolved.
         """
         rows = self.conn.execute(
-            """SELECT referenced_title FROM paper_reference
-               WHERE paper_id = ? AND referenced_title != ''
-                 AND referenced_title NOT LIKE 'https://openalex.org/%'
-               ORDER BY citation_count DESC
+            """SELECT COALESCE(rw.title, pr.referenced_title) as title
+               FROM paper_reference pr
+               LEFT JOIN reference_work rw ON pr.external_id = rw.external_id
+               WHERE pr.paper_id = ?
+                 AND (rw.title IS NOT NULL
+                      OR (pr.referenced_title != ''
+                          AND pr.referenced_title NOT LIKE 'https://openalex.org/%'))
+               ORDER BY pr.citation_count DESC
                LIMIT ?""",
             (paper_id, limit),
         ).fetchall()
-        return [r["referenced_title"] for r in rows]
+        return [r["title"] for r in rows]
 
     def save_paper_reference_ids(
         self, paper_id: int, source: str, external_ids: list[str]
@@ -439,24 +458,45 @@ class Database:
         )
         self.conn.commit()
 
-    def get_pending_reference_ids(self) -> list[dict]:
-        """Get all unresolved references (URL used as placeholder title).
+    # ── reference_work cache (dedup across all papers) ─────────
 
-        Returns list of {external_id, paper_id} for phase-2 resolution.
+    def save_reference_works(self, works: list[dict]):
+        """Batch insert resolved reference works. Dedup by external_id."""
+        if not works:
+            return
+        self.conn.executemany(
+            """INSERT OR IGNORE INTO reference_work (external_id, title, source)
+               VALUES (?, ?, ?)""",
+            [(w["external_id"], w["title"], w.get("source", "openalex")) for w in works],
+        )
+        self.conn.commit()
+
+    def get_unresolved_ref_ids(self) -> list[str]:
+        """Get external_ids in paper_reference (placeholders) NOT yet cached.
+
+        Only returns IDs not already in reference_work — avoids re-fetching.
         """
         rows = self.conn.execute(
-            """SELECT DISTINCT external_id, paper_id FROM paper_reference
-               WHERE referenced_title LIKE 'https://openalex.org/%'
-                 AND source = 'openalex'"""
+            """SELECT DISTINCT pr.external_id FROM paper_reference pr
+               WHERE pr.referenced_title LIKE 'https://openalex.org/%'
+                 AND pr.source = 'openalex'
+                 AND pr.external_id NOT IN (SELECT external_id FROM reference_work)"""
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [r["external_id"] for r in rows]
 
-    def resolve_reference_title(self, external_id: str, title: str):
-        """Update all placeholder rows with a resolved title."""
+    def resolve_paper_references(self):
+        """UPDATE paper_reference from reference_work cache.
+
+        Replaces placeholder URLs with resolved titles for all rows
+        whose external_id exists in reference_work.
+        """
         self.conn.execute(
-            """UPDATE paper_reference SET referenced_title = ?
-               WHERE external_id = ? AND referenced_title LIKE 'https://openalex.org/%'""",
-            (title, external_id),
+            """UPDATE paper_reference SET referenced_title = (
+                   SELECT rw.title FROM reference_work rw
+                   WHERE rw.external_id = paper_reference.external_id
+               )
+               WHERE referenced_title LIKE 'https://openalex.org/%'
+                 AND external_id IN (SELECT external_id FROM reference_work)"""
         )
         self.conn.commit()
 
