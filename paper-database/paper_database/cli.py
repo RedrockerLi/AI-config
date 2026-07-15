@@ -23,7 +23,7 @@ import click
 from rich.console import Console
 from rich.table import Table as RichTable
 
-from paper_database.classifier import DeepSeekClassifier
+from paper_database.classifier import LLMClassifier
 from paper_database.config import get_config, reload_config, TopicConfig
 from paper_database.db import Database
 from paper_database.exporter import Exporter
@@ -652,7 +652,7 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export):
         console.print(f"[red]✗[/] Topic '{s['topic_key']}' 配置不存在")
         sys.exit(1)
 
-    classifier = DeepSeekClassifier(config.classifier)
+    classifier = LLMClassifier(config.classifier)
 
     if dry_run:
         console.print("[yellow]DRY RUN 模式 — 只打印 prompt，不调 API[/]\n")

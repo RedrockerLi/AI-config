@@ -1,8 +1,9 @@
-"""DeepSeek API classifier: async httpx calls with configurable concurrency.
+"""LLM classifier: async httpx calls with configurable concurrency.
 
-Replaces the old subprocess-based CLIClassifier.  Supports
-deepseek-chat and deepseek-reasoner models, with optional thinking
-mode.  Concurrency is controlled via asyncio.Semaphore (default 32).
+Replaces the old subprocess-based CLIClassifier.  Supports any
+OpenAI-compatible API (DeepSeek, OpenAI, etc.), with optional
+thinking mode.  Concurrency is controlled via asyncio.Semaphore
+(default 32).
 """
 
 from __future__ import annotations
@@ -32,8 +33,8 @@ class ClassificationResult:
     extra: dict = field(default_factory=dict)
 
 
-class DeepSeekClassifier:
-    """Async classifier using direct DeepSeek API calls via httpx."""
+class LLMClassifier:
+    """Async classifier using LLM API calls (OpenAI-compatible) via httpx."""
 
     def __init__(self, config: ClassifierConfig):
         self.api_base_url = config.api_base_url.rstrip("/")
@@ -251,7 +252,7 @@ class DeepSeekClassifier:
         return system + "\n" + body
 
     async def _call_api(self, prompt: str) -> str:
-        """Call DeepSeek chat completions API. Returns JSON string from content."""
+        """Call chat completions API. Returns JSON string from content."""
         messages = [{"role": "user", "content": prompt}]
         body: dict = {
             "model": self.model,
