@@ -16,6 +16,8 @@ class PaperMeta:
     venue: str = ""          # venue key, e.g. "hpca"
     abstract: str = ""
     citation_count: int = 0
+    topics: list[str] = field(default_factory=list)       # from OpenAlex concepts
+    references: list[str] = field(default_factory=list)   # from S2 / OpenAlex refs
 
 
 @dataclass

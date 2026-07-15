@@ -1,7 +1,7 @@
 ---
 name: paper-survey
-description: 主题调研 — 基于已有文献库创建调研、AI 分类筛选论文、导出 CSV 结果。触发词: "文献调研", "paper survey", "论文筛选", "拉论文", "/paper-survey"。当用户想要做学术文献调研、筛选特定主题的论文时使用。前提: 文献库已通过 paper-database 技能初始化。
-version: 0.2.0
+description: 主题调研 — 基于已有文献库创建调研、AI 分类筛选论文(支持磋商投票)、导出 CSV 结果。触发词: "文献调研", "paper survey", "论文筛选", "拉论文", "/paper-survey"。当用户想要做学术文献调研、筛选特定主题的论文时使用。前提: 文献库已通过 paper-database 技能初始化。
+version: 0.3.0
 ---
 
 ## 核心规则
@@ -16,8 +16,10 @@ version: 0.2.0
 | `survey preview` | < 2s | **可执行** |
 | `survey create` | < 2s | **可执行** |
 | `survey classify` (dry-run, limit=3) | < 1s | **可执行** |
+| `survey classify --debug-paper` | ~2s | **可执行** |
 | `survey classify` (100 篇) | ~3 min | **仅生成命令** |
 | `survey classify` (全部, ~2000 篇) | 15–60 min | **仅生成命令** |
+| `survey classify --deliberate 3` | 3× 耗时 | **仅生成命令** |
 | `survey export` | < 2s | **可执行** |
 
 耗时操作在 AI 对话中运行会：
@@ -50,6 +52,8 @@ version: 0.2.0
 | 查看调研进度 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey stats --survey-id <id>` | <1s |
 | Dry-run 测试 prompt | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --dry-run --limit 3` | <1s |
 | 开始分类(全部) | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id>` | 15–60min |
+| 磋商投票分类 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --deliberate 3` | 更长 |
+| 调试单篇分类 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --debug-paper "标题关键词"` | ~2s |
 | 分类 50 篇后暂停 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --limit 50` | ~2min |
 | 分类不自动导出 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id> --no-export` | — |
 | 终端预览结果 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <id>` | <2s |
@@ -66,6 +70,10 @@ version: 0.2.0
 | `--dry-run` | 只打印 prompt 和论文信息，不调 API。用于验证 prompt 是否合理 |
 | `--limit N` / `-l N` | 最多分类 N 篇后停止。用于小批量测试或分批复核 |
 | `--no-export` | 分类完成后不自动导出 CSV（默认会自动导出到 `results/` 目录） |
+| `--deliberate N` / `-D N` | 磋商模式：每篇跑 N 轮并行分类，投票聚合结果。建议奇数 3/5/7 |
+| `--debug-paper "..."` / `-d` | 调试模式：按标题或 paper_id 查找论文，展示完整 prompt+响应，不写数据库 |
+
+**磋商机制**：LLM 输出有随机性。`--deliberate 3` 每篇论文并行跑 3 轮 → 多数投票决定 include → 分类字段取多数值。结果记录置信度（如 `_deliberation_confidence: 2/3`）。三种投票策略可配置（`config/classifier.yaml` → `deliberation.strategy`）：`majority` / `supermajority` / `consensus`。
 
 **断点续传**：中断后直接重新运行相同命令即可，已分类的论文自动跳过，无需 `--start` 参数。
 ```bash
@@ -172,18 +180,19 @@ cd $PAPER_DATABASE_HOME && python -m paper_database survey preview --survey-id <
    cd $PAPER_DATABASE_HOME && python -m paper_database survey classify --survey-id <id>
    ```
 
-### 场景6: 先补摘要再分类
-用户: "有些论文没有摘要，先补全再分类"
+### 场景6: 先补元数据再分类
+用户: "有些论文没有摘要/主题标签，先补全再分类"
 
 ```bash
-# 1. 先批量补全摘要（DOI-only 模式，10 credits / 50 篇）
-cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-abstracts --doi-only
+# 1. 补全所有缺失元数据（DOI-only 模式，10 credits / 50 篇）
+cd $PAPER_DATABASE_HOME && python -m paper_database paper enrich --doi-only
 
-# 2. 补全完成后创建新的调研（论文快照会包含摘要）
+# 2. 补全完成后创建新的调研（论文快照会包含主题和参考文献）
 cd $PAPER_DATABASE_HOME && python -m paper_database survey create --topic <topic> --name "新调研"
 
-# 3. 运行分类
+# 3. 运行分类（可选磋商投票）
 cd $PAPER_DATABASE_HOME && python -m paper_database survey classify -s <id>
+cd $PAPER_DATABASE_HOME && python -m paper_database survey classify -s <id> --deliberate 3
 ```
 
 ## 分类器配置
@@ -247,6 +256,8 @@ JSON 中**必须包含** `"include": true/false`。用户无需在 `topics.yaml`
 ## 技术要点
 
 - **分类实现**：通过 `httpx.AsyncClient` 并发调用 LLM API（provider 由 `config/classifier.yaml` 配置），采用 Claim-based Queue + Worker 模式：feeder 原子 claim 未分类论文 → 放入队列 → worker 分类后标记为 classified，杜绝重复分类
+- **增强输入**：分类 prompt 不仅包含标题+摘要，还包括论文主题标签（来自 OpenAlex concepts）和参考文献（来自 S2/OpenAlex），帮助模型判断论文的研究脉络
+- **磋商投票**：`--deliberate N` 每篇论文并行 N 轮 → 多数投票聚合（include + 分类字段），降低 LLM 随机性
 - **内存控制**：队列最多缓存 `2 × max_concurrency` 篇论文，feeder 按需补充
 - **耗时计算**：总耗时 ≈ ceil(论文数 / max_concurrency) × 每篇 API 响应时间。每篇约 1-2 秒，2000 篇 / 32 并发 ≈ 1-1.5 分钟（实际受限于 API 速率）
 - **自动导出**：`survey classify` 完成后自动导出 CSV 到 `results/survey_<id>_<name>.csv`（仅导出相关论文）
@@ -263,7 +274,7 @@ JSON 中**必须包含** `"include": true/false`。用户无需在 `topics.yaml`
 - 大批量分类建议在终端直接跑（不经过 Skill 对话），`tmux`/`screen` 中运行可随时 detach
 - `--limit N` 用于分批：先跑 100 篇检查效果 → 调整 prompt → 继续跑
 - 中断后直接重新运行即可自动续传（已分类的论文自动跳过），无需 `--start` 参数
-- 建议先运行 `paper fetch-abstracts --doi-only` 补全摘要，再创建 survey 进行分类
+- 建议先运行 `paper enrich --doi-only` 补全摘要和主题标签，再创建 survey 进行分类
 - `dry-run` 不消耗 LLM API 调用，只打印 prompt 和论文信息
 - 如果文献库没有数据，引导用户使用 `paper-database` 技能先建库
 - 不同 topic 的配置在 `config/topics.yaml` 中定义，可自行添加

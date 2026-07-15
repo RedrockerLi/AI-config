@@ -1,7 +1,7 @@
 ---
 name: paper-database
-description: 文献库管理 — 初始化会议/期刊 (venue)、从 DBLP 拉取论文数据、补全摘要、查看统计。触发词: "初始化文献库", "拉论文", "更新论文", "文献库", "paper database", "/paper-database"。当用户想要设置或维护论文数据库时使用。
-version: 0.2.0
+description: 文献库管理 — 初始化会议/期刊 (venue)、从 DBLP 拉取论文数据、补全元数据(摘要/主题/参考文献)、查看统计。触发词: "初始化文献库", "拉论文", "更新论文", "文献库", "paper database", "/paper-database"。当用户想要设置或维护论文数据库时使用。
+version: 0.3.0
 ---
 
 ## 核心规则
@@ -16,7 +16,7 @@ version: 0.2.0
 | `paper stats` | < 1s | **可执行** |
 | `paper fetch` (单 venue 单年) | ~5s | **可执行** |
 | `paper fetch` (全部 venue) | 10–30 min | **仅生成命令** |
-| `paper fetch-abstracts` | 10–60 min | **仅生成命令** |
+| `paper enrich` | 10–60 min | **仅生成命令** |
 | `paper fetch-all` | 30 min – 2h | **仅生成命令** |
 
 耗时操作在 AI 对话中运行会：
@@ -45,17 +45,22 @@ version: 0.2.0
 | 列出所有 venue | `cd $PAPER_DATABASE_HOME && python -m paper_database venue list` | <1s |
 | 拉取论文列表(全部) | `cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch` | 10–30min |
 | 拉取论文列表(单 venue 单年) | `cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch --venue isca --year 2024` | ~5s |
-| 拉取论文+摘要(全部) | `cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-all` | 30min–2h |
-| 拉取论文+摘要(指定) | `cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-all --venue hpca --year 2024` | ~30s |
-| 补全摘要 | `cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-abstracts` | 10–60min |
-| 补全前 100 篇摘要 | `cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-abstracts --stop-after 100` | ~5min |
+| 拉取论文+元数据(全部) | `cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-all` | 30min–2h |
+| 拉取论文+元数据(指定) | `cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-all --venue hpca --year 2024` | ~30s |
+| 补全元数据 | `cd $PAPER_DATABASE_HOME && python -m paper_database paper enrich` | 10–60min |
+| 补全元数据+参考文献 | `cd $PAPER_DATABASE_HOME && python -m paper_database paper enrich --fetch-references` | 10–60min |
+| 先补 100 篇测试 | `cd $PAPER_DATABASE_HOME && python -m paper_database paper enrich --stop-after 100` | ~5min |
 | 查看论文统计 | `cd $PAPER_DATABASE_HOME && python -m paper_database paper stats` | <1s |
 
-### fetch-abstracts 参数说明
+### enrich 参数说明
 
-- `--limit N` / `-l N`：每批获取摘要的数量（默认 10000）
-- `--stop-after N` / `--max-total N`：最多获取多少篇摘要后停止（0=不限制，直到全部完成）
-- 支持自动续跑：中断后重新执行会从上次位置继续
+- `--limit N` / `-l N`：每批处理数量（默认 10000）
+- `--stop-after N` / `--max-total N`：最多处理多少篇后停止（0=不限制，直到全部完成）
+- `--doi-only`：仅批量 DOI 查询 (10 credits/50 篇)，跳过昂贵的标题搜索
+- `--fetch-references`：同时获取参考文献列表（S2 零额外调用; OpenAlex 需二阶段 API 调用）
+- 自动检测三种缺失：摘要、主题标签、参考文献
+- 支持断点续跑：中断后重新执行会从上次位置继续
+- `fetch-abstracts` 保留为隐藏别名，自动转发到 `enrich`
 
 ## 典型对话流程
 
@@ -80,7 +85,7 @@ cd $PAPER_DATABASE_HOME && python -m paper_database paper stats
 并告知用户：
 - 建议先设置 API Key 加速摘要获取（见下方 API Keys 说明）
 - 中断后重新运行会自动跳过已获取的论文和摘要
-- `fetch-all` = `paper fetch` + `paper fetch-abstracts`，可拆开执行
+- `fetch-all` = `paper fetch` + `paper enrich`，可拆开执行
 
 ### 场景2: 更新特定会议的最新论文
 用户: "把 ISCA 2025 和 MICRO 2025 的论文拉一下"
@@ -103,17 +108,20 @@ cd $PAPER_DATABASE_HOME && python -m paper_database paper stats
 
 然后汇报：总数、有摘要数量、各 venue 分年统计。
 
-### 场景4: 只补全缺失的摘要
-用户: "有些论文没摘要，帮我补全"
+### 场景4: 补全缺失的元数据
+用户: "有些论文没摘要/没主题标签，帮我补全"
 
 先执行 `paper stats` 查看缺失数量，然后输出：
 
 ```bash
-# 全部补全（可能耗时 10-60 分钟）
-cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-abstracts
+# 全部补全（检测所有缺失: 摘要+主题标签，可能耗时 10-60 分钟）
+cd $PAPER_DATABASE_HOME && python -m paper_database paper enrich
+
+# 带参考文献一起
+cd $PAPER_DATABASE_HOME && python -m paper_database paper enrich --fetch-references
 
 # 或者先只补 200 篇试试
-cd $PAPER_DATABASE_HOME && python -m paper_database paper fetch-abstracts --stop-after 200
+cd $PAPER_DATABASE_HOME && python -m paper_database paper enrich --stop-after 200
 ```
 
 ### 场景5: 添加新 venue 后拉取
@@ -146,7 +154,8 @@ export OPENALEX_API_KEY="your-key"
 
 ## 技术要点
 
-- **数据来源**：DBLP XML（论文列表）→ Semantic Scholar（摘要优先）→ OpenAlex（备用）
+- **数据来源**：DBLP XML（论文列表）→ Semantic Scholar（摘要+references优先）→ OpenAlex（摘要+topics+refs补充）
+- **`enrich` 自动检测缺失**：摘要、主题标签、参考文献三种缺失自动识别，已完整的论文自动跳过
 - **多卷会议**：DBLP fetcher 自动从 `index.xml` 发现多卷（如 ASPLOS 2023 有 4 卷），无需手动处理
 - **自适应限流**：OpenAlex 遇 429 自动降速（延迟翻倍），连续 3 次 429 后停止重试
 - **分类器**：支持多 provider（`config/classifier.yaml`），当前支持 DeepSeek 和本地 OpenAI 兼容模型
@@ -154,8 +163,8 @@ export OPENALEX_API_KEY="your-key"
 ## 重要提醒
 
 - **绝对不要直接操作数据库**：所有操作必须通过 `python -m paper_database` CLI 命令完成，**禁止**使用 `sqlite3` 或任何 SQL 命令直接访问 `papers.db`
-- **绝对不要动论文原始数据**：`paper fetch` 和 `paper fetch-abstracts` 使用 INSERT OR IGNORE，不会覆盖已有数据。永远不要手动 DELETE/UPDATE `paper` 或 `venue` 表
-- `fetch-all` 是 `fetch` + `fetch-abstracts` 的组合，适合首次建库
+- **绝对不要动论文原始数据**：`paper fetch` 和 `paper enrich` 使用 INSERT OR IGNORE，不会覆盖已有数据。永远不要手动 DELETE/UPDATE `paper` 或 `venue` 表
+- `fetch-all` 是 `fetch` + `enrich` 的组合，适合首次建库
 - `fetch` 只拉论文列表不含摘要，适合快速更新
 - 多机器使用：拷贝 `papers.db` 或在每台机器上重新 `fetch-all`
 - 文献库就绪后，使用 `paper-survey` 技能做主题调研

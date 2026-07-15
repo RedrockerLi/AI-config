@@ -308,30 +308,58 @@ def paper_fetch(ctx, venue_key, year_filter):
     console.print(f"\n[green]✓[/] {', '.join(summary_parts)}")
 
 
-@paper.command("fetch-abstracts")
+@paper.command("enrich")
 @click.option("--limit", "-l", default=0,
-              help="每批获取摘要的数量 (0=默认 10000)")
+              help="每批处理数量 (0=默认 10000)")
 @click.option("--stop-after", "--max-total", type=int, default=0,
-              help="最多获取多少篇摘要后停止 (0=不限制)")
+              help="最多处理多少篇后停止 (0=不限制)")
 @click.option("--doi-only", is_flag=True, default=False,
               help="仅批量 DOI 查询 (10 credits/50 篇)，跳过昂贵的标题搜索")
+@click.option("--fetch-references", is_flag=True, default=False,
+              help="获取参考文献列表 (S2 零额外调用; OpenAlex 需二阶段 API 调用)")
 @click.pass_context
-def paper_fetch_abstracts(ctx, limit, stop_after, doi_only):
-    """从 Semantic Scholar / OpenAlex 补全摘要（自动续跑，直到全部完成）."""
+def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
+    """补全论文元数据: 摘要、主题标签、参考文献（自动续跑，直到全部完成）."""
     db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
     batch_size = limit or 10000
 
     total = db.count_papers()
-    with_abstract = db.count_papers_with_abstract()
-    remaining = total - with_abstract
+    need_abstract = total - db.count_papers_with_abstract()
+    need_topics = db.count_papers_without_topics()
+    need_refs = db.count_papers_without_references()
+
+    # Quick check: nothing needed
+    if need_abstract == 0 and need_topics == 0 and need_refs == 0:
+        console.print("[green]✓[/] 所有论文元数据已完整")
+        return
+
+    console.print(f"总论文: {total}")
+    console.print(f"  缺摘要:       {need_abstract}")
+    console.print(f"  缺主题标签:   {need_topics}")
+    console.print(f"  缺参考文献:   {need_refs}")
+    if not fetch_references:
+        console.print(
+            f"  [dim](加 --fetch-references 可同时补参考文献)[/]"
+        )
+
+    # Count how many papers need at least one thing
+    remaining = db.get_papers_needing_enrichment(limit=1)
+    remaining = db.conn.execute(
+        """SELECT COUNT(*) as cnt FROM paper p
+           LEFT JOIN (SELECT DISTINCT paper_id FROM paper_topic) pt ON p.id = pt.paper_id
+           LEFT JOIN (SELECT DISTINCT paper_id FROM paper_reference) pr ON p.id = pr.paper_id
+           WHERE (p.abstract = '' OR p.abstract IS NULL)
+              OR pt.paper_id IS NULL
+              OR pr.paper_id IS NULL"""
+    ).fetchone()["cnt"]
 
     if remaining == 0:
-        console.print("[green]✓[/] 所有论文已有摘要")
+        console.print("[green]✓[/] 所有论文元数据已完整")
         return
 
     estimated_batches = (remaining + batch_size - 1) // batch_size
     console.print(
-        f"需要获取摘要: {remaining} 篇 "
+        f"\n需处理: {remaining} 篇 "
         f"(预计 {estimated_batches} 批, 每批 {batch_size} 篇)"
     )
 
@@ -347,22 +375,32 @@ def paper_fetch_abstracts(ctx, limit, stop_after, doi_only):
     while True:
         batch_num += 1
 
-        papers_without = db.get_papers_without_abstract(limit=batch_size)
-        if not papers_without:
+        papers_batch = db.get_papers_needing_enrichment(limit=batch_size)
+        if not papers_batch:
             break
 
-        # 应用 --stop-after 上限
+        # Apply --stop-after cap
         total_done = total_s2 + total_oa
         if stop_after > 0 and total_done >= stop_after:
             break
-        if stop_after > 0 and total_done + len(papers_without) > stop_after:
-            papers_without = papers_without[: stop_after - total_done]
+        if stop_after > 0 and total_done + len(papers_batch) > stop_after:
+            papers_batch = papers_batch[: stop_after - total_done]
 
         if batch_num > 1:
             console.print(
                 f"\n[bold]--- 批次 {batch_num}/{estimated_batches}，"
                 f"自动续跑... ---[/]"
             )
+
+        # Show per-batch gap stats
+        na = sum(1 for r in papers_batch if r.get("need_abstract"))
+        nt = sum(1 for r in papers_batch if r.get("need_topics"))
+        nr = sum(1 for r in papers_batch if r.get("need_refs"))
+        parts = []
+        if na: parts.append(f"缺摘要: {na}")
+        if nt: parts.append(f"缺主题: {nt}")
+        if nr: parts.append(f"缺引用: {nr}")
+        console.print(f"  [dim]本批: {', '.join(parts)}[/]")
 
         # Build PaperMeta list
         all_papers = [
@@ -373,21 +411,22 @@ def paper_fetch_abstracts(ctx, limit, stop_after, doi_only):
                 dblp_key=row["dblp_key"],
                 doi=row.get("doi", "") or "",
             )
-            for row in papers_without
+            for row in papers_batch
         ]
 
         batch_s2 = 0
         batch_oa = 0
         batch_failed = 0
 
-        # ── Phase 1: Semantic Scholar (only with API key) ──────────
+        # ── Semantic Scholar (需 API key) ────────────────────────
         s2_results: dict = {}
-        if os.environ.get("S2_API_KEY"):
+        s2_has_key = bool(os.environ.get("S2_API_KEY"))
+        if s2_has_key:
             if s2 is None:
                 s2 = SemanticScholarFetcher()
             doi_count = sum(1 for p in all_papers if p.doi.strip())
             console.print(
-                f"\n[bold]Phase 1: Semantic Scholar[/] "
+                f"\n[bold]Semantic Scholar[/] "
                 f"({doi_count} 篇有 DOI → batch, 其余标题搜索)"
             )
             s2_results = s2.fetch_abstracts_batch(all_papers, db=db)
@@ -395,20 +434,26 @@ def paper_fetch_abstracts(ctx, limit, stop_after, doi_only):
             console.print(f"  S2 成功: {batch_s2} 篇")
         else:
             console.print(
-                "[dim]未设置 S2_API_KEY，跳过 Semantic Scholar，直接使用 OpenAlex[/]"
+                "[dim]未设置 S2_API_KEY，跳过 Semantic Scholar[/]"
             )
 
-        # ── Phase 2: OpenAlex 兜底 (批量 DOI 查询) ─────────────
+        # ── OpenAlex 补充获取 ──────────────────────────────────
         remaining_papers = [p for p in all_papers if p.dblp_key not in s2_results]
         if remaining_papers:
             doi_count = sum(1 for p in remaining_papers if p.doi.strip())
+            # References: S2 handles them if key is set; otherwise use OpenAlex two-phase
+            oa_fetch_refs = fetch_references and not s2_has_key
+            refs_hint = " +refs" if oa_fetch_refs else ""
             console.print(
-                f"\n[bold]Phase 2: OpenAlex 兜底[/] ({len(remaining_papers)} 篇, "
+                f"\n[bold]OpenAlex 补充获取{refs_hint}[/] ({len(remaining_papers)} 篇, "
                 f"{doi_count} 篇有 DOI → 批量查询, "
                 f"{len(remaining_papers) - doi_count} 篇标题搜索)"
             )
 
-            oa_results = oa.fetch_abstracts_batch(remaining_papers, db=db, doi_only=doi_only)
+            oa_results = oa.fetch_abstracts_batch(
+                remaining_papers, db=db, doi_only=doi_only,
+                fetch_references=oa_fetch_refs,
+            )
 
             batch_oa += len(oa_results)
             batch_failed = len(remaining_papers) - len(oa_results)
@@ -421,24 +466,54 @@ def paper_fetch_abstracts(ctx, limit, stop_after, doi_only):
         total_oa += batch_oa
         total_failed += batch_failed
 
-        # 停滞检测：本批 0 获取 + 剩余数未减少 → 无法继续
-        current_remaining = db.count_papers() - db.count_papers_with_abstract()
+        # Stagnation detection
+        current_remaining = db.conn.execute(
+            """SELECT COUNT(*) as cnt FROM paper p
+               LEFT JOIN (SELECT DISTINCT paper_id FROM paper_topic) pt ON p.id = pt.paper_id
+               LEFT JOIN (SELECT DISTINCT paper_id FROM paper_reference) pr ON p.id = pr.paper_id
+               WHERE (p.abstract = '' OR p.abstract IS NULL)
+                  OR pt.paper_id IS NULL
+                  OR pr.paper_id IS NULL"""
+        ).fetchone()["cnt"]
+
         if (
             batch_num > 1
             and current_remaining >= prev_remaining
             and batch_s2 + batch_oa == 0
         ):
             console.print(
-                f"[yellow]⚠ 本批未能获取任何摘要 "
-                f"({current_remaining} 篇仍未获取), 停止[/]"
+                f"[yellow]⚠ 本批未能获取任何数据 "
+                f"({current_remaining} 篇仍未完整), 停止[/]"
             )
             break
         prev_remaining = current_remaining
 
+    # Final status
+    final_na = total - db.count_papers_with_abstract()
+    final_nt = db.count_papers_without_topics()
+    final_nr = db.count_papers_without_references()
     console.print(
-        f"\n[green]✓[/] 全部完成! S2: {total_s2} | OpenAlex: {total_oa} | "
+        f"\n[green]✓[/] 完成! S2: {total_s2} | OpenAlex: {total_oa} | "
         f"Failed: {total_failed}"
     )
+    console.print(
+        f"剩余 — 缺摘要: {final_na} | 缺主题: {final_nt} | "
+        f"缺引用: {final_nr}"
+    )
+
+
+# Backward-compat alias
+@paper.command("fetch-abstracts", hidden=True)
+@click.option("--limit", "-l", default=0)
+@click.option("--stop-after", "--max-total", type=int, default=0)
+@click.option("--doi-only", is_flag=True, default=False)
+@click.option("--fetch-references", is_flag=True, default=False)
+@click.pass_context
+def paper_fetch_abstracts(ctx, limit, stop_after, doi_only, fetch_references):
+    """[已弃用] 请使用 `enrich` 替代."""
+    console.print("[yellow]⚠ fetch-abstracts 已重命名为 enrich，正在转发...[/]\n")
+    ctx.invoke(paper_enrich, limit=limit, stop_after=stop_after,
+               doi_only=doi_only, fetch_references=fetch_references)
 
 
 @paper.command("fetch-all")
@@ -449,8 +524,8 @@ def paper_fetch_all(ctx, venue_key, year_filter):
     """一键拉取论文列表 + 摘要."""
     # First, fetch paper list
     ctx.invoke(paper_fetch, venue_key=venue_key, year_filter=year_filter)
-    # Then, fetch abstracts
-    ctx.invoke(paper_fetch_abstracts)
+    # Then, enrich metadata
+    ctx.invoke(paper_enrich)
 
 
 @paper.command("stats")
@@ -703,6 +778,7 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper, deli
             sys.exit(1)
 
         row = matches[0]
+        paper_id = row["paper_id"]
 
         paper = PaperMeta(
             title=row["title"], year=row["year"],
@@ -712,13 +788,21 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper, deli
             venue=row.get("venue_key", ""),
             abstract=row.get("abstract", "") or "",
             citation_count=row.get("citation_count", 0),
+            topics=survey_db.get_paper_topics(paper_id),
+            references=survey_db.get_paper_references(paper_id),
         )
 
         console.print(f"[bold]Paper:[/] {paper.title}")
-        console.print(f"[bold]  ID:[/] {row['paper_id']}")
+        console.print(f"[bold]  ID:[/] {paper_id}")
         console.print(f"[bold]  Venue:[/] {row.get('venue_name','')} ({row['year']})")
         console.print(f"[bold]  CCF:[/] {row.get('ccf_rank','')}")
         console.print(f"[bold]  Abstract:[/] {paper.abstract or '(无)'}")
+        if paper.topics:
+            console.print(f"[bold]  Topics:[/] {'; '.join(paper.topics[:10])}")
+        if paper.references:
+            console.print(f"[bold]  References ({len(paper.references)}):[/]")
+            for ref in paper.references[:5]:
+                console.print(f"    - {ref[:80]}")
 
         prompt, raw_response, result, round_details = asyncio.run(
             classifier.debug_classify_single(

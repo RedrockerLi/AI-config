@@ -399,6 +399,7 @@ class LLMClassifier:
                     if not rows:
                         break
                     for row in rows:
+                        paper_id = row["paper_id"]
                         paper = PaperMeta(
                             title=row["title"], year=row["year"],
                             authors=json.loads(row["authors"]),
@@ -407,6 +408,8 @@ class LLMClassifier:
                             venue=row.get("venue_key", ""),
                             abstract=row.get("abstract", "") or "",
                             citation_count=row.get("citation_count", 0),
+                            topics=db.get_paper_topics(paper_id),
+                            references=db.get_paper_references(paper_id),
                         )
                         await queue.put((paper, dict(row)))
                         fed += 1
@@ -427,12 +430,26 @@ class LLMClassifier:
 
     def _build_prompt(self, paper: PaperMeta, topic: TopicConfig) -> str:
         abstract = paper.abstract or "（无摘要，仅根据标题判断）"
+
+        # Format keywords: semicolon-separated or placeholder
+        keywords_str = "; ".join(paper.topics) if paper.topics else "（无）"
+
+        # Format references: numbered list or placeholder (max 20)
+        if paper.references:
+            refs_str = "\n".join(
+                f"  - {t}" for t in paper.references[:20]
+            )
+        else:
+            refs_str = "  （无）"
+
         body = topic.prompt_template.format(
             topic_name=topic.name,
             topic_description=topic.description,
             topic_keywords=", ".join(topic.keywords),
             title=paper.title,
             abstract=abstract,
+            keywords=keywords_str,
+            references=refs_str,
         )
         # System instruction: the ONE hardcoded contract between code and model.
         # The model MUST output "include": true/false so the code knows whether

@@ -51,7 +51,7 @@ class SemanticScholarFetcher(AbstractFetcher):
         return []
 
     def fetch_abstract(self, paper: PaperMeta) -> Optional[str]:
-        """Search Semantic Scholar by title and get abstract."""
+        """Search Semantic Scholar by title and get abstract + references."""
         query = paper.title.strip().rstrip(".")
         if len(query) > 200:
             query = query[:200]
@@ -59,7 +59,8 @@ class SemanticScholarFetcher(AbstractFetcher):
         params = {
             "query": query,
             "limit": 3,
-            "fields": "title,abstract,year,authors,citationCount,externalIds",
+            "fields": "title,abstract,year,authors,citationCount,externalIds,"
+                      "references.title,references.citationCount",
         }
 
         try:
@@ -90,6 +91,13 @@ class SemanticScholarFetcher(AbstractFetcher):
         if ext_ids.get("DOI") and not paper.doi:
             paper.doi = ext_ids["DOI"]
 
+        # Populate references from title search result
+        refs = best.get("references") or []
+        paper.references = [
+            r.get("title", "") for r in refs
+            if r and r.get("title")
+        ]
+
         return abstract.strip() if abstract else None
 
     def fetch_abstracts_batch(
@@ -109,7 +117,7 @@ class SemanticScholarFetcher(AbstractFetcher):
         """
         results: dict[str, str] = {}
 
-        def _save(paper, abstract):
+        def _save(paper, abstract, references=None):
             """Write to DB immediately if available, else accumulate."""
             if db is not None:
                 db.update_paper_abstract(
@@ -117,6 +125,15 @@ class SemanticScholarFetcher(AbstractFetcher):
                     citation_count=paper.citation_count,
                     doi=paper.doi,
                 )
+                if references:
+                    paper_id = db.get_paper_id_by_dblp_key(paper.dblp_key)
+                    if paper_id:
+                        db.save_paper_references(
+                            paper_id, "semantic_scholar",
+                            [{"title": r["title"],
+                              "citation_count": r.get("citation_count", 0)}
+                             for r in references],
+                        )
             results[paper.dblp_key] = abstract
 
         # ── Phase 1: Split by DOI availability ──────────────────
@@ -160,10 +177,22 @@ class SemanticScholarFetcher(AbstractFetcher):
                         continue
 
                     abstract = (info.get("abstract") or "").strip()
+                    refs = info.get("references") or []
                     if abstract:
-                        _save(paper, abstract)
+                        _save(paper, abstract, references=refs)
                         batch_saved += 1
                         matched_dois.add(doi)
+                    elif refs:
+                        # Save references even if no abstract
+                        if db is not None:
+                            paper_id = db.get_paper_id_by_dblp_key(paper.dblp_key)
+                            if paper_id:
+                                db.save_paper_references(
+                                    paper_id, "semantic_scholar",
+                                    [{"title": r["title"],
+                                      "citation_count": r.get("citation_count", 0)}
+                                     for r in refs],
+                                )
                     if info.get("citationCount"):
                         paper.citation_count = info["citationCount"]
                     s2_doi = info.get("doi") or ""
@@ -181,13 +210,14 @@ class SemanticScholarFetcher(AbstractFetcher):
                 if doi not in matched_dois:
                     papers_without_doi.append(paper)
 
-        # ── Phase 3: Individual title search ────────────────────
+        # ── Individual title search ────────────────────
         if papers_without_doi:
             effective_delay = 0.02 if self._api_key else self.delay
             for paper in papers_without_doi:
                 abstract = self.fetch_abstract(paper)
                 if abstract:
-                    _save(paper, abstract)
+                    refs = [{"title": t} for t in paper.references] if paper.references else None
+                    _save(paper, abstract, references=refs)
                 time.sleep(effective_delay)
 
         return results
@@ -199,7 +229,8 @@ class SemanticScholarFetcher(AbstractFetcher):
         (single batch, no internal loop).
 
         Returns:
-            {lowercase_doi: {"abstract": str, "doi": str, "title": str}}
+            {lowercase_doi: {"abstract": str, "doi": str, "title": str,
+                             "references": list[dict]}}
         """
         results: dict[str, dict] = {}
         ids = [f"DOI:{doi}" for doi in dois]
@@ -207,7 +238,8 @@ class SemanticScholarFetcher(AbstractFetcher):
         try:
             response = httpx.post(
                 self.BATCH_URL,
-                params={"fields": "title,abstract,citationCount,externalIds"},
+                params={"fields": "title,abstract,citationCount,externalIds,"
+                                  "references.title,references.citationCount"},
                 json={"ids": ids},
                 headers=self._headers,
                 timeout=self.timeout,
@@ -224,11 +256,17 @@ class SemanticScholarFetcher(AbstractFetcher):
             ext = paper.get("externalIds") or {}
             doi = (ext.get("DOI") or "").strip().lower()
             if doi:
+                refs = paper.get("references") or []
                 results[doi] = {
                     "abstract": paper.get("abstract") or "",
                     "citationCount": paper.get("citationCount") or 0,
                     "doi": doi,
                     "title": paper.get("title") or "",
+                    "references": [
+                        {"title": r.get("title", ""),
+                         "citation_count": r.get("citationCount", 0)}
+                        for r in refs if r and r.get("title")
+                    ],
                 }
 
         return results

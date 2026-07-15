@@ -52,6 +52,25 @@ CREATE TABLE IF NOT EXISTS fetched_log (
     fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_fetched_log_venue_year ON fetched_log(venue_key, year);
+
+CREATE TABLE IF NOT EXISTS paper_topic (
+    paper_id INTEGER NOT NULL REFERENCES paper(id),
+    source TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    score REAL,
+    PRIMARY KEY (paper_id, source, topic)
+);
+CREATE INDEX IF NOT EXISTS idx_pt_paper ON paper_topic(paper_id);
+
+CREATE TABLE IF NOT EXISTS paper_reference (
+    paper_id INTEGER NOT NULL REFERENCES paper(id),
+    referenced_title TEXT NOT NULL,
+    external_id TEXT,
+    source TEXT NOT NULL,
+    citation_count INTEGER DEFAULT 0,
+    PRIMARY KEY (paper_id, referenced_title, source)
+);
+CREATE INDEX IF NOT EXISTS idx_pr_paper ON paper_reference(paper_id);
 """
 
 SURVEY_SCHEMA = """
@@ -108,6 +127,25 @@ CREATE TABLE IF NOT EXISTS survey_progress_log (
     recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_spl_survey ON survey_progress_log(survey_id, recorded_at);
+
+CREATE TABLE IF NOT EXISTS paper_topic (
+    paper_id INTEGER NOT NULL REFERENCES paper(id),
+    source TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    score REAL,
+    PRIMARY KEY (paper_id, source, topic)
+);
+CREATE INDEX IF NOT EXISTS idx_pt_paper ON paper_topic(paper_id);
+
+CREATE TABLE IF NOT EXISTS paper_reference (
+    paper_id INTEGER NOT NULL REFERENCES paper(id),
+    referenced_title TEXT NOT NULL,
+    external_id TEXT,
+    source TEXT NOT NULL,
+    citation_count INTEGER DEFAULT 0,
+    PRIMARY KEY (paper_id, referenced_title, source)
+);
+CREATE INDEX IF NOT EXISTS idx_pr_paper ON paper_reference(paper_id);
 """
 
 
@@ -312,6 +350,71 @@ class Database:
         )
         self.conn.commit()
 
+    def get_paper_id_by_dblp_key(self, dblp_key: str) -> Optional[int]:
+        """Get paper.id by dblp_key. Returns None if not found."""
+        row = self.conn.execute(
+            "SELECT id FROM paper WHERE dblp_key = ?", (dblp_key,)
+        ).fetchone()
+        return row["id"] if row else None
+
+    def save_paper_topics(
+        self, paper_id: int, source: str, topics: list[dict]
+    ):
+        """Save topics/concepts for a paper. Each topic: {topic, score}.
+
+        Uses INSERT OR IGNORE — safe for re-runs.
+        """
+        if not topics:
+            return
+        self.conn.executemany(
+            """INSERT OR IGNORE INTO paper_topic (paper_id, source, topic, score)
+               VALUES (?, ?, ?, ?)""",
+            [(paper_id, source, t["topic"], t.get("score")) for t in topics],
+        )
+        self.conn.commit()
+
+    def save_paper_references(
+        self, paper_id: int, source: str, refs: list[dict]
+    ):
+        """Save references for a paper. Each ref: {title, external_id, citation_count}.
+
+        Uses INSERT OR IGNORE — safe for re-runs.
+        """
+        if not refs:
+            return
+        self.conn.executemany(
+            """INSERT OR IGNORE INTO paper_reference
+               (paper_id, referenced_title, external_id, source, citation_count)
+               VALUES (?, ?, ?, ?, ?)""",
+            [
+                (paper_id, r["title"], r.get("external_id", ""),
+                 source, r.get("citation_count", 0))
+                for r in refs
+            ],
+        )
+        self.conn.commit()
+
+    def get_paper_topics(self, paper_id: int) -> list[str]:
+        """Get topic names for a paper, ordered by score descending."""
+        rows = self.conn.execute(
+            """SELECT topic FROM paper_topic
+               WHERE paper_id = ?
+               ORDER BY score DESC""",
+            (paper_id,),
+        ).fetchall()
+        return [r["topic"] for r in rows]
+
+    def get_paper_references(self, paper_id: int, limit: int = 20) -> list[str]:
+        """Get referenced paper titles for a paper, most-cited first."""
+        rows = self.conn.execute(
+            """SELECT referenced_title FROM paper_reference
+               WHERE paper_id = ?
+               ORDER BY citation_count DESC
+               LIMIT ?""",
+            (paper_id, limit),
+        ).fetchall()
+        return [r["referenced_title"] for r in rows]
+
     def get_paper_by_dblp_key(self, dblp_key: str) -> Optional[dict]:
         row = self.conn.execute(
             "SELECT * FROM paper WHERE dblp_key = ?", (dblp_key,)
@@ -384,6 +487,46 @@ class Database:
             "SELECT COUNT(*) as cnt FROM paper WHERE abstract != '' AND abstract IS NOT NULL"
         ).fetchone()
         return row["cnt"] if row else 0
+
+    def count_papers_without_topics(self) -> int:
+        """Count papers that have no topic entries."""
+        row = self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM paper
+               WHERE id NOT IN (SELECT DISTINCT paper_id FROM paper_topic)"""
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    def count_papers_without_references(self) -> int:
+        """Count papers that have no reference entries."""
+        row = self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM paper
+               WHERE id NOT IN (SELECT DISTINCT paper_id FROM paper_reference)"""
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    def get_papers_needing_enrichment(self, limit: int = 500) -> list[dict]:
+        """Get papers missing ANY of: abstract, topics, or references.
+
+        Returns papers sorted by need: totally empty first, then partial.
+        """
+        rows = self.conn.execute(
+            """SELECT p.*,
+                      (CASE WHEN p.abstract = '' OR p.abstract IS NULL THEN 1 ELSE 0 END) as need_abstract,
+                      (CASE WHEN pt.paper_id IS NULL THEN 1 ELSE 0 END) as need_topics,
+                      (CASE WHEN pr.paper_id IS NULL THEN 1 ELSE 0 END) as need_refs
+               FROM paper p
+               LEFT JOIN (SELECT DISTINCT paper_id FROM paper_topic) pt ON p.id = pt.paper_id
+               LEFT JOIN (SELECT DISTINCT paper_id FROM paper_reference) pr ON p.id = pr.paper_id
+               WHERE (p.abstract = '' OR p.abstract IS NULL)
+                  OR pt.paper_id IS NULL
+                  OR pr.paper_id IS NULL
+               ORDER BY (CASE WHEN p.abstract = '' OR p.abstract IS NULL THEN 0 ELSE 1 END),
+                        (CASE WHEN pt.paper_id IS NULL THEN 0 ELSE 1 END),
+                        (CASE WHEN pr.paper_id IS NULL THEN 0 ELSE 1 END)
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def paper_stats(self) -> dict:
         """Return paper statistics grouped by venue + year, with abstract counts."""

@@ -1,6 +1,6 @@
 # Paper Database — 文献库管理系统
 
-从 DBLP、Semantic Scholar、OpenAlex 自动拉取论文元数据和摘要，通过 DeepSeek API 并发判断是否与指定主题相关，导出 CSV。
+从 DBLP、Semantic Scholar、OpenAlex 自动拉取论文元数据、摘要、主题标签、参考文献，通过 LLM API 并发分类筛选，支持多轮磋商投票，导出 CSV。
 
 ## 快速开始
 
@@ -20,8 +20,9 @@ python -m paper_database survey create --topic scheduling --name "测试调研"
 # 5. 先 dry-run 检查 prompt
 python -m paper_database survey classify -s 1 --dry-run --limit 3
 
-# 6. 正式分类
+# 6. 正式分类 (支持磋商投票)
 python -m paper_database survey classify -s 1 --limit 10
+python -m paper_database survey classify -s 1 --deliberate 3   # 3轮磋商投票
 
 # 7. 预览 + 导出
 python -m paper_database survey preview -s 1python -m paper_database survey export -s 1```
@@ -107,7 +108,7 @@ python -m paper_database venue list
 
 # Paper
 python -m paper_database paper fetch
-python -m paper_database paper fetch-abstracts [--doi-only] [--stop-after N]
+python -m paper_database paper enrich [--doi-only] [--stop-after N] [--fetch-references]
 python -m paper_database paper fetch-all [--venue X --year Y]
 python -m paper_database paper stats
 
@@ -118,7 +119,8 @@ python -m paper_database survey stats --survey-id X
 python -m paper_database survey delete --survey-id X
 
 # Classify
-python -m paper_database survey classify -s X [--dry-run] [--limit N] [--no-export]
+python -m paper_database survey classify -s X [--dry-run] [--limit N] [--no-export] [--deliberate N]
+python -m paper_database survey classify -s X --debug-paper "title"  # 调试单篇分类
 
 # Export
 python -m paper_database survey preview --survey-id X
@@ -142,6 +144,48 @@ cd /path/to/AI-config
 ./setup.sh ~/.claude/skills       # 手动指定目录
 ```
 
+## 分类特性
+
+### 磋商机制 (Deliberation)
+
+LLM 输出有随机性，单次分类可能不可靠。`--deliberate N` 启用磋商模式：
+
+```bash
+# 每篇论文并行跑 3 轮分类，投票决定最终结果
+python -m paper_database survey classify -s 1 --deliberate 3
+
+# 调试模式查看每轮详情
+python -m paper_database survey classify -s 1 --debug-paper "CGRA" --deliberate 3
+```
+
+三种投票策略（`config/classifier.yaml` → `deliberation.strategy`）：
+
+| 策略 | 规则 |
+|------|------|
+| `majority` | 多数决，平局→收录（"宁可多收录"） |
+| `supermajority` | 赞成率 ≥ 阈值（默认 0.67）才收录 |
+| `consensus` | 全票通过才收录，否则标记 uncertain |
+
+### 增强输入 (Topics + References)
+
+分类 prompt 不仅包含标题+摘要，还包括论文的**主题标签**和**参考文献**：
+
+```
+论文主题标签: Computer Architecture; Scheduling; CGRA; FPGA
+引用文献（该论文引用的关键相关工作）:
+  - Gandiva: Introspective Cluster Scheduling
+  - Tetrisched: Global Scheduling with Constraints
+  - Chronus: A Deadline-Aware Scheduler
+```
+
+这比只看摘要更能判断论文的研究脉络。数据来源：
+
+| 数据类型 | 来源 | 额外 API 开销 |
+|---------|------|:--:|
+| 摘要 | S2 / OpenAlex | — |
+| 主题标签 (concepts) | OpenAlex | 零（已在响应中） |
+| 参考文献 (references) | S2（优先）/ OpenAlex | 零（S2）/ 二阶段批量（OpenAlex） |
+
 ## API Keys
 
 ### 分类
@@ -149,42 +193,58 @@ cd /path/to/AI-config
 支持多 provider，在 `config/classifier.yaml` 的 `providers` 中配置各 provider 的 `api_key`。
 支持 `{env:VAR_NAME}` 占位符。详见上方配置说明。
 
-### 摘要获取
+### 元数据补全 (`enrich`)
 
-摘要获取流程：**Semantic Scholar (Phase 1)** → **OpenAlex 批量 (Phase 2)** 兜底。
+`enrich` 命令自动检测并补全所有缺失的元数据：摘要、主题标签、参考文献。
+
+流程：**Semantic Scholar (优先)** → **OpenAlex (补充)**。
 
 | Key | 用途 | 获取 | 推荐度 |
 |-----|------|------|--------|
-| `S2_API_KEY` | Semantic Scholar — DOI 批量 + 标题搜索 | https://www.semanticscholar.org/product/api | 推荐 |
-| `OPENALEX_API_KEY` | OpenAlex — DOI 批量查询（50 篇/批，10 credits/批） | https://openalex.org/settings/api | 申请方便，**强烈推荐** |
+| `S2_API_KEY` | Semantic Scholar — DOI 批量(500/批) + 标题搜索 + references | https://www.semanticscholar.org/product/api | 推荐 |
+| `OPENALEX_API_KEY` | OpenAlex — DOI 批量查询（50 篇/批, 10 credits/批）+ concepts | https://openalex.org/settings/api | 申请方便，**强烈推荐** |
 
 ```bash
 export S2_API_KEY="your-key"
 export OPENALEX_API_KEY="your-key"
 ```
 
+### enrich 使用
+
+```bash
+# 补全所有缺失 (摘要 + topics，自动续跑)
+python -m paper_database paper enrich
+
+# 同时获取参考文献 (S2 零额外开销)
+python -m paper_database paper enrich --fetch-references
+
+# DOI-only 模式 (仅批量查询，跳过标题搜索)
+python -m paper_database paper enrich --doi-only
+```
+
+`fetch-abstracts` 保留为隐藏别名，自动转发到 `enrich`。
+
 ## 数据来源
 
 | 步骤 | API | 获取内容 | 备注 |
 |------|-----|---------|------|
 | ① 论文列表 | DBLP XML 导出 | title, authors, year, doi, dblp_key | 比搜索 API 更准确 |
-| ② 摘要(优先) | Semantic Scholar | abstract (纯文本), citations | 支持 DOI 批量 (500/批) |
-| ③ 摘要(兜底) | OpenAlex | abstract (倒排索引) | DOI 批量 50 批, 10 credits/批 |
+| ② 摘要 + refs(优先) | Semantic Scholar | abstract, citations, references | 支持 DOI 批量 (500/批) |
+| ③ 摘要 + topics + refs(补充) | OpenAlex | abstract (倒排索引), concepts, referenced_works | DOI 批量 50 批, 10 credits/批 |
 
-### OpenAlex 两种模式
+### enrich 两种模式
 
 | 模式 | 命令 | 消耗 | 适用场景 |
 |------|------|------|---------|
-| **DOI-only** (推荐) | `fetch-abstracts --doi-only` | 10 credits / 50 篇 | 快速低成本获取大量摘要 |
-| 完整模式 | `fetch-abstracts` | DOI 批量 + 标题搜索 10 credits/篇 | 覆盖无 DOI 的论文 |
-
-DOI-only 跳过昂贵的标题搜索，只跑批量 DOI 查询。对于大部分有 DOI 的论文
-（DBLP 覆盖率 >99%），一次 `--doi-only` 就能用极低成本获取几乎全部摘要。
+| **DOI-only** (推荐) | `enrich --doi-only` | 10 credits / 50 篇 | 快速低成本获取大量数据 |
+| 完整模式 | `enrich` | DOI 批量 + 标题搜索 10 credits/篇 | 覆盖无 DOI 的论文 |
 
 ## 数据库
 
 `papers.db` (SQLite, gitignored):
-- `venue` / `paper`: 论文元数据（与调研无关）
+- `venue` / `paper`: 论文元数据
+- `paper_topic`: 论文主题标签（来自 OpenAlex concepts）
+- `paper_reference`: 论文参考文献列表（来自 S2 / OpenAlex）
 - `survey` / `survey_result`: 每次调研独立的分类结果
 
 多机器使用: 拷贝 `papers.db` 或在每台机器上重新 `fetch-all`。
