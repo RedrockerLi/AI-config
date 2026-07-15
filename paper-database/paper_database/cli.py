@@ -669,7 +669,10 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export):
             status = "[green]✓[/]"
         else:
             status = "[dim]✗[/]"
-        console.print(f"  [{done}] {status} {title[:70]}...")
+        t = title[:70]
+        if len(title) > 70:
+            t += "..."
+        console.print(f"  [{done}] {status} {t}")
 
     asyncio.run(classifier.run_survey(
         survey_db, survey_id, topic_cfg,
