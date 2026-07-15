@@ -348,7 +348,7 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
 
     console.print(f"总论文: {total}")
     console.print(f"  缺摘要:       {need_abstract}")
-    console.print(f"  缺主题标签:   {need_topics}")
+    console.print(f"  缺关键词标签:   {need_topics}")
     console.print(f"  缺参考文献:   {need_refs}")
     if not fetch_references:
         console.print(
@@ -411,7 +411,7 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
         nr = sum(1 for r in papers_batch if r.get("need_refs"))
         parts = []
         if na: parts.append(f"缺摘要: {na}")
-        if nt: parts.append(f"缺主题: {nt}")
+        if nt: parts.append(f"缺关键词: {nt}")
         if nr: parts.append(f"缺引用: {nr}")
         console.print(f"  [dim]本批: {', '.join(parts)}[/]")
 
@@ -510,7 +510,7 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
         f"Failed: {total_failed}"
     )
     console.print(
-        f"剩余 — 缺摘要: {final_na} | 缺主题: {final_nt} | "
+        f"剩余 — 缺摘要: {final_na} | 缺关键词: {final_nt} | "
         f"缺引用: {final_nr}"
     )
 
