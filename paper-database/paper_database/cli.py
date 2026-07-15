@@ -356,7 +356,6 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
         )
 
     # Count how many papers need at least one thing
-    remaining = db.get_papers_needing_enrichment(limit=1)
     remaining = db.conn.execute(
         """SELECT COUNT(*) as cnt FROM paper p
            LEFT JOIN (SELECT DISTINCT paper_id FROM paper_topic) pt ON p.id = pt.paper_id
@@ -370,6 +369,17 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
         console.print("[green]✓[/] 所有论文元数据已完整")
         return
 
+    s2_has_key = bool(os.environ.get("S2_API_KEY"))
+    oa = OpenAlexFetcher()
+
+    # ── Fast path: --fetch-references → just resolve, skip DOI batch ─
+    if fetch_references and not s2_has_key:
+        console.print("\n[bold]解析参考文献[/] (从已保存的 URL)...")
+        oa._resolve_referenced_works(db)
+        final_nr = db.count_papers_without_references()
+        console.print(f"\n[green]✓[/] 完成! 剩余缺引用: {final_nr}")
+        return
+
     estimated_batches = (remaining + batch_size - 1) // batch_size
     console.print(
         f"\n需处理: {remaining} 篇 "
@@ -377,7 +387,6 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
     )
 
     s2 = None
-    oa = OpenAlexFetcher()
 
     total_s2 = 0
     total_oa = 0
@@ -433,7 +442,6 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
 
         # ── Semantic Scholar (需 API key) ────────────────────────
         s2_results: dict = {}
-        s2_has_key = bool(os.environ.get("S2_API_KEY"))
         if s2_has_key:
             if s2 is None:
                 s2 = SemanticScholarFetcher()
@@ -454,18 +462,14 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
         remaining_papers = [p for p in all_papers if p.dblp_key not in s2_results]
         if remaining_papers:
             doi_count = sum(1 for p in remaining_papers if p.doi.strip())
-            # References: S2 handles them if key is set; otherwise use OpenAlex two-phase
-            oa_fetch_refs = fetch_references and not s2_has_key
-            refs_hint = " +refs" if oa_fetch_refs else ""
             console.print(
-                f"\n[bold]OpenAlex 补充获取{refs_hint}[/] ({len(remaining_papers)} 篇, "
+                f"\n[bold]OpenAlex 补充获取[/] ({len(remaining_papers)} 篇, "
                 f"{doi_count} 篇有 DOI → 批量查询, "
                 f"{len(remaining_papers) - doi_count} 篇标题搜索)"
             )
 
             oa_results = oa.fetch_abstracts_batch(
                 remaining_papers, db=db, doi_only=doi_only,
-                fetch_references=oa_fetch_refs,
             )
 
             batch_oa += len(oa_results)
@@ -479,7 +483,7 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
         total_oa += batch_oa
         total_failed += batch_failed
 
-        # Stagnation detection
+        # Stagnation detection: stop if missing count didn't decrease
         current_remaining = db.conn.execute(
             """SELECT COUNT(*) as cnt FROM paper p
                LEFT JOIN (SELECT DISTINCT paper_id FROM paper_topic) pt ON p.id = pt.paper_id
@@ -489,14 +493,9 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
                   OR pr.paper_id IS NULL"""
         ).fetchone()["cnt"]
 
-        if (
-            batch_num > 1
-            and current_remaining >= prev_remaining
-            and batch_s2 + batch_oa == 0
-        ):
+        if batch_num > 1 and current_remaining >= prev_remaining:
             console.print(
-                f"[yellow]⚠ 本批未能获取任何数据 "
-                f"({current_remaining} 篇仍未完整), 停止[/]"
+                f"[yellow]⚠ 缺失数未下降 ({current_remaining} 篇), 停止[/]"
             )
             break
         prev_remaining = current_remaining

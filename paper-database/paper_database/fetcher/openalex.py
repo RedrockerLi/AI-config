@@ -214,10 +214,6 @@ class OpenAlexFetcher(AbstractFetcher):
                 f"DOI-only 模式跳过"
             )
 
-        # ── Phase 2: Resolve pending reference URLs → titles ─────
-        if fetch_references and db is not None:
-            self._resolve_referenced_works(db)
-
         if papers:
             doi_count = sum(1 for p in papers if p.doi.strip())
             mode = "DOI-only" if doi_only else "完整"
@@ -317,10 +313,40 @@ class OpenAlexFetcher(AbstractFetcher):
         3. Store resolved titles in reference_work (global dedup cache)
         4. UPDATE paper_reference from reference_work
         """
+        # Count total placeholder rows in paper_reference
+        total_placeholders = db.conn.execute(
+            """SELECT COUNT(*) FROM paper_reference
+               WHERE referenced_title LIKE 'https://openalex.org/%'"""
+        ).fetchone()[0]
+
+        cached_count = db.conn.execute(
+            """SELECT COUNT(*) FROM reference_work"""
+        ).fetchone()[0]
+
         unresolved = db.get_unresolved_ref_ids()
+        skip_count = total_placeholders - len(unresolved)  # already cached
+
         if not unresolved:
-            print("  [OpenAlex] 参考文献: 全部已缓存，跳过 API 查询")
+            print(
+                f"  [OpenAlex] 参考文献: {total_placeholders} 个占位URL, "
+                f"全部已缓存 ({cached_count} 篇), 跳过 API 查询"
+            )
+            # Still refresh paper_reference from cache (new papers may have been added)
+            updated = db.resolve_paper_references()
+            if updated > 0:
+                print(f"  [OpenAlex] 从缓存更新 paper_reference: {updated} 行")
             return
+
+        # Dedup count
+        print(
+            f"  [OpenAlex] 解析参考文献:\n"
+            f"    paper_reference 占位URL: {total_placeholders}\n"
+            f"    reference_work 已缓存:  {cached_count} 篇\n"
+            f"    去重后待解析:          {len(unresolved)} 篇 "
+            f"(跳过 {skip_count} 个已缓存)\n"
+            f"    批次: { (len(unresolved) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE } "
+            f"(50 IDs/批, 10 credits/批)"
+        )
 
         # Extract short ID from OpenAlex URL (e.g., "W2753353163")
         id_map: dict[str, str] = {}  # short_id → full URL
@@ -330,11 +356,6 @@ class OpenAlexFetcher(AbstractFetcher):
 
         short_ids = list(id_map.keys())
         total_batches = (len(short_ids) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE
-
-        print(
-            f"  [OpenAlex] 解析参考文献: {len(short_ids)} 篇待解析 "
-            f"({total_batches} 批, 10 credits/批)..."
-        )
 
         resolved = 0
         for i in range(0, len(short_ids), self._BATCH_CHUNK_SIZE):
@@ -364,13 +385,23 @@ class OpenAlexFetcher(AbstractFetcher):
                 db.save_reference_works(batch_works)
                 resolved += len(batch_works)
 
+            # Progress: same style as DOI batch output
+            n_hits = len(batch_works) if batch_works else 0
+            print(
+                f"  [OpenAlex] refs 批次 {batch_num}/{total_batches} "
+                f"({len(chunk)} IDs)... {n_hits} hits",
+                flush=True,
+            )
+
         # Update paper_reference titles from cache
+        updated = 0
         if resolved > 0:
-            db.resolve_paper_references()
+            updated = db.resolve_paper_references()
 
         print(
-            f"  [OpenAlex] 参考文献解析完成: "
-            f"本次解析 {resolved} 篇, 缓存命中 {len(unresolved) - resolved} 篇"
+            f"  [OpenAlex] 解析完成: "
+            f"reference_work +{resolved} 篇 | "
+            f"paper_reference 更新 {updated} 行"
         )
 
     def _search_by_doi(self, doi: str) -> Optional[str]:

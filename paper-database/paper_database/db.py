@@ -484,13 +484,14 @@ class Database:
         ).fetchall()
         return [r["external_id"] for r in rows]
 
-    def resolve_paper_references(self):
+    def resolve_paper_references(self) -> int:
         """UPDATE paper_reference from reference_work cache.
 
         Replaces placeholder URLs with resolved titles for all rows
         whose external_id exists in reference_work.
+        Returns number of rows updated.
         """
-        self.conn.execute(
+        cur = self.conn.execute(
             """UPDATE paper_reference SET referenced_title = (
                    SELECT rw.title FROM reference_work rw
                    WHERE rw.external_id = paper_reference.external_id
@@ -499,6 +500,7 @@ class Database:
                  AND external_id IN (SELECT external_id FROM reference_work)"""
         )
         self.conn.commit()
+        return cur.rowcount
 
     def get_paper_by_dblp_key(self, dblp_key: str) -> Optional[dict]:
         row = self.conn.execute(
