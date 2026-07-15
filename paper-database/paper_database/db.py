@@ -38,7 +38,9 @@ CREATE TABLE IF NOT EXISTS paper (
     abstract_source TEXT DEFAULT '',
     citation_count INTEGER DEFAULT 0,
     fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    abstract_fetched_at TIMESTAMP
+    abstract_fetched_at TIMESTAMP,
+    ref_ids TEXT DEFAULT '',
+    s2_refs TEXT DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_venue_year ON paper(venue_id, year);
@@ -61,17 +63,6 @@ CREATE TABLE IF NOT EXISTS paper_topic (
     PRIMARY KEY (paper_id, source, topic)
 );
 CREATE INDEX IF NOT EXISTS idx_pt_paper ON paper_topic(paper_id);
-
-CREATE TABLE IF NOT EXISTS paper_reference (
-    paper_id INTEGER NOT NULL REFERENCES paper(id),
-    openalex_id TEXT DEFAULT '',
-    s2_title TEXT DEFAULT '',
-    source TEXT NOT NULL,
-    citation_count INTEGER DEFAULT 0,
-    PRIMARY KEY (paper_id, openalex_id, s2_title)
-);
-CREATE INDEX IF NOT EXISTS idx_pr_paper ON paper_reference(paper_id);
-CREATE INDEX IF NOT EXISTS idx_pr_oa ON paper_reference(openalex_id);
 
 CREATE TABLE IF NOT EXISTS reference_work (
     openalex_id TEXT PRIMARY KEY,
@@ -105,7 +96,9 @@ CREATE TABLE IF NOT EXISTS paper (
     citation_count INTEGER DEFAULT 0,
     fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     abstract_fetched_at TIMESTAMP,
-    flag TEXT DEFAULT 'unclaimed'
+    flag TEXT DEFAULT 'unclaimed',
+    ref_ids TEXT DEFAULT '',
+    s2_refs TEXT DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_venue_year ON paper(venue_id, year);
@@ -143,17 +136,6 @@ CREATE TABLE IF NOT EXISTS paper_topic (
     PRIMARY KEY (paper_id, source, topic)
 );
 CREATE INDEX IF NOT EXISTS idx_pt_paper ON paper_topic(paper_id);
-
-CREATE TABLE IF NOT EXISTS paper_reference (
-    paper_id INTEGER NOT NULL REFERENCES paper(id),
-    openalex_id TEXT DEFAULT '',
-    s2_title TEXT DEFAULT '',
-    source TEXT NOT NULL,
-    citation_count INTEGER DEFAULT 0,
-    PRIMARY KEY (paper_id, openalex_id, s2_title)
-);
-CREATE INDEX IF NOT EXISTS idx_pr_paper ON paper_reference(paper_id);
-CREATE INDEX IF NOT EXISTS idx_pr_oa ON paper_reference(openalex_id);
 
 CREATE TABLE IF NOT EXISTS reference_work (
     openalex_id TEXT PRIMARY KEY,
@@ -397,23 +379,32 @@ class Database:
         )
         self.conn.commit()
 
-    def save_paper_references(
-        self, paper_id: int, source: str, refs: list[dict]
-    ):
-        """Save S2 references. Each ref: {title, citation_count}.
-
-        Uses INSERT OR IGNORE — safe for re-runs.
-        """
-        if not refs:
-            return
-        self.conn.executemany(
-            """INSERT OR IGNORE INTO paper_reference
-               (paper_id, openalex_id, s2_title, source, citation_count)
-               VALUES (?, '', ?, ?, ?)""",
-            [(paper_id, r["title"], source, r.get("citation_count", 0))
-             for r in refs],
+    def save_paper_s2_refs(self, dblp_key: str, titles: list[str]):
+        """Save S2 reference titles to paper.s2_refs (newline-separated)."""
+        self.conn.execute(
+            "UPDATE paper SET s2_refs = ? WHERE dblp_key = ?",
+            ("\n".join(titles), dblp_key),
         )
         self.conn.commit()
+
+    def save_paper_ref_ids(self, dblp_key: str, openalex_ids: list[str]):
+        """Save OpenAlex reference IDs to paper.ref_ids (comma-separated).
+
+        Deduplicates and skips empty strings.
+        """
+        unique = list(set(oid for oid in openalex_ids if oid))
+        if not unique:
+            return
+        self.conn.execute(
+            "UPDATE paper SET ref_ids = ? WHERE dblp_key = ?",
+            (",".join(unique), dblp_key),
+        )
+        self.conn.commit()
+        # Also register in reference_work as unresolved
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO reference_work (openalex_id) VALUES (?)",
+            [(oid,) for oid in unique],
+        )
 
     def get_paper_topics(self, paper_id: int) -> list[str]:
         """Get topic names for a paper, ordered by score descending."""
@@ -428,79 +419,80 @@ class Database:
     def get_paper_references(self, paper_id: int, limit: int = 20) -> list[str]:
         """Get resolved reference titles for a paper.
 
-        OpenAlex first: JOIN reference_work WHERE resolved=1.
-        S2 fallback: s2_title from paper_reference.
+        OpenAlex first: parse paper.ref_ids → JOIN reference_work WHERE resolved=1.
+        S2 fallback: paper.s2_refs.
         """
         # 1. OpenAlex (优先)
-        rows = self.conn.execute(
-            """SELECT rw.title FROM paper_reference pr
-               JOIN reference_work rw ON pr.openalex_id = rw.openalex_id
-               WHERE pr.paper_id = ? AND rw.resolved = 1 AND rw.title != ''
-               LIMIT ?""",
-            (paper_id, limit),
-        ).fetchall()
-        if rows:
-            return [r[0] for r in rows]
+        row = self.conn.execute(
+            "SELECT ref_ids FROM paper WHERE id = ?", (paper_id,)
+        ).fetchone()
+        if row and row["ref_ids"]:
+            ids = [oid for oid in row["ref_ids"].split(",") if oid]
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                titles = self.conn.execute(
+                    f"""SELECT title FROM reference_work
+                        WHERE openalex_id IN ({placeholders})
+                          AND resolved = 1 AND title != ''
+                        LIMIT ?""",
+                    ids + [limit],
+                ).fetchall()
+                if titles:
+                    return [t[0] for t in titles]
 
         # 2. S2 fallback
-        rows = self.conn.execute(
-            """SELECT DISTINCT s2_title FROM paper_reference
-               WHERE paper_id = ? AND s2_title != ''
-               LIMIT ?""",
-            (paper_id, limit),
-        ).fetchall()
-        return [r[0] for r in rows]
+        row = self.conn.execute(
+            "SELECT s2_refs FROM paper WHERE id = ?", (paper_id,)
+        ).fetchone()
+        if row and row["s2_refs"]:
+            titles = [t for t in row["s2_refs"].split("\n") if t]
+            return titles[:limit]
 
-    def save_paper_reference_ids(
-        self, paper_id: int, source: str, openalex_ids: list[str]
-    ):
-        """Save OpenAlex reference short IDs (e.g. 'W1234567890').
-
-        INSERT OR IGNORE — safe for re-runs.
-        """
-        if not openalex_ids:
-            return
-        unique_ids = list(set(openalex_ids))
-        self.conn.executemany(
-            """INSERT OR IGNORE INTO paper_reference
-               (paper_id, openalex_id, s2_title, source)
-               VALUES (?, ?, '', ?)""",
-            [(paper_id, rid, source) for rid in unique_ids if rid],
-        )
-        self.conn.commit()
-
-    # ── reference_work (ID → title dictionary) ─────────────────
-
-    def save_reference_works(self, works: list[dict]):
-        """Batch insert/update reference_work.
-
-        Each work: {openalex_id, title, resolved}.
-        resolved=1 for successfully fetched, 0 for not-found.
-        """
-        if not works:
-            return
-        self.conn.executemany(
-            """INSERT OR REPLACE INTO reference_work (openalex_id, title, resolved)
-               VALUES (?, ?, ?)""",
-            [(w["openalex_id"], w.get("title", ""), w.get("resolved", 0))
-             for w in works],
-        )
-        self.conn.commit()
+        return []
 
     def get_unresolved_ref_ids(self) -> list[str]:
-        """Get OpenAlex IDs in paper_reference NOT yet in reference_work as resolved.
+        """Get unique OpenAlex IDs from all papers that are unresolved.
 
-        Returns short IDs like 'W1234567890'.
+        Parses all paper.ref_ids, deduplicates, returns IDs not in
+        reference_work with resolved=1.
         """
-        rows = self.conn.execute(
-            """SELECT DISTINCT pr.openalex_id FROM paper_reference pr
-               WHERE pr.openalex_id != ''
-                 AND pr.source = 'openalex'
-                 AND pr.openalex_id NOT IN (
-                     SELECT openalex_id FROM reference_work WHERE resolved = 1
-                 )"""
+        # Collect all unique IDs from paper.ref_ids
+        all_rows = self.conn.execute(
+            "SELECT ref_ids FROM paper WHERE ref_ids != ''"
         ).fetchall()
-        return [r[0] for r in rows]
+        all_ids: set[str] = set()
+        for r in all_rows:
+            for oid in r["ref_ids"].split(","):
+                oid = oid.strip()
+                if oid:
+                    all_ids.add(oid)
+        if not all_ids:
+            return []
+
+        # Find resolved in chunks (SQLite max 999 variables)
+        all_ids_list = list(all_ids)
+        resolved = set()
+        chunk_size = 500
+        for i in range(0, len(all_ids_list), chunk_size):
+            chunk = all_ids_list[i:i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            for row in self.conn.execute(
+                f"""SELECT openalex_id FROM reference_work
+                    WHERE openalex_id IN ({placeholders}) AND resolved = 1""",
+                chunk,
+            ).fetchall():
+                resolved.add(row[0])
+
+        return [oid for oid in all_ids if oid not in resolved]
+
+    def mark_ref_resolved(self, openalex_id: str, title: str, ok: bool):
+        """Mark a reference as resolved (ok=True) or not-found (ok=False)."""
+        self.conn.execute(
+            """INSERT OR REPLACE INTO reference_work (openalex_id, title, resolved)
+               VALUES (?, ?, ?)""",
+            (openalex_id, title, 1 if ok else -1),
+        )
+        self.conn.commit()
 
     def get_paper_by_dblp_key(self, dblp_key: str) -> Optional[dict]:
         row = self.conn.execute(
@@ -584,10 +576,9 @@ class Database:
         return row["cnt"] if row else 0
 
     def count_papers_without_references(self) -> int:
-        """Count papers that have no reference entries."""
+        """Count papers that have no reference entries (ref_ids = '' AND s2_refs = '')."""
         row = self.conn.execute(
-            """SELECT COUNT(*) as cnt FROM paper
-               WHERE id NOT IN (SELECT DISTINCT paper_id FROM paper_reference)"""
+            "SELECT COUNT(*) as cnt FROM paper WHERE ref_ids = '' AND s2_refs = ''"
         ).fetchone()
         return row["cnt"] if row else 0
 
@@ -600,16 +591,15 @@ class Database:
             """SELECT p.*,
                       (CASE WHEN p.abstract = '' OR p.abstract IS NULL THEN 1 ELSE 0 END) as need_abstract,
                       (CASE WHEN pt.paper_id IS NULL THEN 1 ELSE 0 END) as need_topics,
-                      (CASE WHEN pr.paper_id IS NULL THEN 1 ELSE 0 END) as need_refs
+                      (CASE WHEN (p.ref_ids = '' AND p.s2_refs = '') THEN 1 ELSE 0 END) as need_refs
                FROM paper p
                LEFT JOIN (SELECT DISTINCT paper_id FROM paper_topic) pt ON p.id = pt.paper_id
-               LEFT JOIN (SELECT DISTINCT paper_id FROM paper_reference) pr ON p.id = pr.paper_id
                WHERE (p.abstract = '' OR p.abstract IS NULL)
                   OR pt.paper_id IS NULL
-                  OR pr.paper_id IS NULL
+                  OR (p.ref_ids = '' AND p.s2_refs = '')
                ORDER BY (CASE WHEN p.abstract = '' OR p.abstract IS NULL THEN 0 ELSE 1 END),
                         (CASE WHEN pt.paper_id IS NULL THEN 0 ELSE 1 END),
-                        (CASE WHEN pr.paper_id IS NULL THEN 0 ELSE 1 END)
+                        (CASE WHEN (p.ref_ids = '' AND p.s2_refs = '') THEN 0 ELSE 1 END)
                LIMIT ?""",
             (limit,),
         ).fetchall()

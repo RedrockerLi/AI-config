@@ -182,14 +182,11 @@ class OpenAlexFetcher(AbstractFetcher):
                             if paper_id:
                                 db.save_paper_topics(paper_id, "openalex", concepts)
                                 topics_saved += 1
-                    # Always save referenced_works URLs (zero extra API cost)
-                    # --fetch-references controls phase-2: resolve URLs → titles
+                    # Always save referenced_works IDs to paper.ref_ids
                     ref_ids = info.get("referenced_works") or []
                     if ref_ids and db is not None:
-                        paper_id = db.get_paper_id_by_dblp_key(paper.dblp_key)
-                        if paper_id:
-                            db.save_paper_reference_ids(paper_id, "openalex", ref_ids)
-                            ref_urls_saved += 1
+                        db.save_paper_ref_ids(paper.dblp_key, ref_ids)
+                        ref_urls_saved += 1
 
             if total_batches > 1:
                 print(
@@ -320,22 +317,25 @@ class OpenAlexFetcher(AbstractFetcher):
         return results
 
     def _resolve_referenced_works(self, db):
-        """Resolve OpenAlex short IDs to titles via reference_work.
+        """Resolve pending OpenAlex IDs to titles via reference_work.
 
-        1. Query paper_reference for IDs not yet resolved in reference_work
-        2. Batch-resolve via OpenAlex API (50 IDs/batch, 10 credits each)
-        3. Store in reference_work (resolved=1) or mark not-found (resolved=0)
+        Collects all unique IDs from paper.ref_ids, resolves via
+        OpenAlex API, stores results in reference_work.
         """
-        total_ids = db.conn.execute(
-            """SELECT COUNT(DISTINCT openalex_id) FROM paper_reference
-               WHERE openalex_id != '' AND source = 'openalex'"""
-        ).fetchone()[0]
+        unresolved = db.get_unresolved_ref_ids()
 
         cached = db.conn.execute(
-            """SELECT COUNT(*) FROM reference_work WHERE resolved = 1"""
+            "SELECT COUNT(*) FROM reference_work WHERE resolved = 1"
         ).fetchone()[0]
 
-        unresolved = db.get_unresolved_ref_ids()
+        # Count total unique IDs across all papers
+        all_ids: set[str] = set()
+        for r in db.conn.execute("SELECT ref_ids FROM paper WHERE ref_ids != ''").fetchall():
+            for oid in r["ref_ids"].split(","):
+                if oid.strip():
+                    all_ids.add(oid.strip())
+
+        total_ids = len(all_ids)
         skip = total_ids - len(unresolved)
 
         if not unresolved:
@@ -348,9 +348,9 @@ class OpenAlexFetcher(AbstractFetcher):
         total_batches = (len(unresolved) + self._BATCH_CHUNK_SIZE - 1) // self._BATCH_CHUNK_SIZE
         print(
             f"  [OpenAlex] 解析参考文献:\n"
-            f"    paper_reference 唯一ID: {total_ids}\n"
-            f"    reference_work 已解析:  {cached} 篇\n"
-            f"    去重后待解析:          {len(unresolved)} 篇 (跳过 {skip} 个已缓存)\n"
+            f"    全库唯一引用ID:  {total_ids}\n"
+            f"    已解析:          {cached} 篇\n"
+            f"    去重后待解析:    {len(unresolved)} 篇 (跳过 {skip} 个已缓存)\n"
             f"    批次: {total_batches} (50 IDs/批, 10 credits/批)"
         )
 
@@ -360,7 +360,6 @@ class OpenAlexFetcher(AbstractFetcher):
             chunk = unresolved[i:i + self._BATCH_CHUNK_SIZE]
             batch_num = i // self._BATCH_CHUNK_SIZE + 1
 
-            # Build full URLs for API call
             id_filter = "|".join(_build_oa_url(oid) for oid in chunk)
             params = self._build_params(
                 filter=f"openalex_id:{id_filter}",
@@ -374,26 +373,21 @@ class OpenAlexFetcher(AbstractFetcher):
                 continue
 
             found_ids: set[str] = set()
-            batch_works = []
             for work in (data.get("results") or []):
                 work_url = work.get("id", "")
                 title = (work.get("title") or "").strip()
                 if work_url and title:
                     oid = _extract_oa_id(work_url)
-                    batch_works.append({"openalex_id": oid, "title": title, "resolved": 1})
+                    db.mark_ref_resolved(oid, title, True)
                     found_ids.add(oid)
+                    resolved += 1
 
-            # Mark not-found IDs
             for oid in chunk:
                 if oid not in found_ids:
-                    batch_works.append({"openalex_id": oid, "title": "", "resolved": 0})
+                    db.mark_ref_resolved(oid, "", False)
                     not_found += 1
 
-            if batch_works:
-                db.save_reference_works(batch_works)
-                resolved += len([w for w in batch_works if w["resolved"] == 1])
-
-            n_hits = len([w for w in batch_works if w["resolved"] == 1])
+            n_hits = len(found_ids)
             print(
                 f"  [OpenAlex] refs 批次 {batch_num}/{total_batches} "
                 f"({len(chunk)} IDs)... {n_hits} hits",

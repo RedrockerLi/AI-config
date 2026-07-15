@@ -126,14 +126,9 @@ class SemanticScholarFetcher(AbstractFetcher):
                     doi=paper.doi,
                 )
                 if references:
-                    paper_id = db.get_paper_id_by_dblp_key(paper.dblp_key)
-                    if paper_id:
-                        db.save_paper_references(
-                            paper_id, "semantic_scholar",
-                            [{"title": r["title"],
-                              "citation_count": r.get("citation_count", 0)}
-                             for r in references],
-                        )
+                    titles = [r["title"] for r in references if r.get("title")]
+                    if titles:
+                        db.save_paper_s2_refs(paper.dblp_key, titles)
             results[paper.dblp_key] = abstract
 
         # ── Phase 1: Split by DOI availability ──────────────────
@@ -184,15 +179,9 @@ class SemanticScholarFetcher(AbstractFetcher):
                         matched_dois.add(doi)
                     elif refs:
                         # Save references even if no abstract
-                        if db is not None:
-                            paper_id = db.get_paper_id_by_dblp_key(paper.dblp_key)
-                            if paper_id:
-                                db.save_paper_references(
-                                    paper_id, "semantic_scholar",
-                                    [{"title": r["title"],
-                                      "citation_count": r.get("citation_count", 0)}
-                                     for r in refs],
-                                )
+                        titles = [r["title"] for r in refs if r.get("title")]
+                        if titles and db is not None:
+                            db.save_paper_s2_refs(paper.dblp_key, titles)
                     if info.get("citationCount"):
                         paper.citation_count = info["citationCount"]
                     s2_doi = info.get("doi") or ""
@@ -218,6 +207,10 @@ class SemanticScholarFetcher(AbstractFetcher):
                 if abstract:
                     refs = [{"title": t} for t in paper.references] if paper.references else None
                     _save(paper, abstract, references=refs)
+                elif paper.references:
+                    titles = [t for t in paper.references if t]
+                    if titles and db is not None:
+                        db.save_paper_s2_refs(paper.dblp_key, titles)
                 time.sleep(effective_delay)
 
         return results

@@ -332,7 +332,7 @@ def paper_fetch(ctx, venue_key, year_filter):
               help="解析参考文献 URL 为标题 (需额外 API credits; 不设则仅保存 URL)")
 @click.pass_context
 def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
-    """补全论文元数据: 摘要、主题标签、参考文献（自动续跑，直到全部完成）."""
+    """补全论文元数据: 摘要、主题标签、参考文献."""
     db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
     batch_size = limit or 10000
 
@@ -359,10 +359,9 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
     remaining = db.conn.execute(
         """SELECT COUNT(*) as cnt FROM paper p
            LEFT JOIN (SELECT DISTINCT paper_id FROM paper_topic) pt ON p.id = pt.paper_id
-           LEFT JOIN (SELECT DISTINCT paper_id FROM paper_reference) pr ON p.id = pr.paper_id
            WHERE (p.abstract = '' OR p.abstract IS NULL)
               OR pt.paper_id IS NULL
-              OR pr.paper_id IS NULL"""
+              OR (p.ref_ids = '' AND p.s2_refs = '')"""
     ).fetchone()["cnt"]
 
     if remaining == 0:
@@ -380,39 +379,20 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
         console.print(f"\n[green]✓[/] 完成! 剩余缺引用: {final_nr}")
         return
 
-    estimated_batches = (remaining + batch_size - 1) // batch_size
-    console.print(
-        f"\n需处理: {remaining} 篇 "
-        f"(预计 {estimated_batches} 批, 每批 {batch_size} 篇)"
-    )
+    console.print(f"\n需处理: {remaining} 篇 (每批 {batch_size} 篇)")
 
     s2 = None
 
     total_s2 = 0
     total_oa = 0
     total_failed = 0
-    prev_remaining = remaining
-    batch_num = 0
 
-    while True:
-        batch_num += 1
+    papers_batch = db.get_papers_needing_enrichment(limit=batch_size)
 
-        papers_batch = db.get_papers_needing_enrichment(limit=batch_size)
-        if not papers_batch:
-            break
-
+    if papers_batch:
         # Apply --stop-after cap
-        total_done = total_s2 + total_oa
-        if stop_after > 0 and total_done >= stop_after:
-            break
-        if stop_after > 0 and total_done + len(papers_batch) > stop_after:
-            papers_batch = papers_batch[: stop_after - total_done]
-
-        if batch_num > 1:
-            console.print(
-                f"\n[bold]--- 批次 {batch_num}/{estimated_batches}，"
-                f"自动续跑... ---[/]"
-            )
+        if stop_after > 0 and len(papers_batch) > stop_after:
+            papers_batch = papers_batch[:stop_after]
 
         # Show per-batch gap stats
         na = sum(1 for r in papers_batch if r.get("need_abstract"))
@@ -436,10 +416,6 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
             for row in papers_batch
         ]
 
-        batch_oa = 0
-        batch_s2 = 0
-        batch_failed = 0
-
         # ── OpenAlex (主) ─────────────────────────────────────
         oa_results: dict = {}
         doi_count = sum(1 for p in all_papers if p.doi.strip())
@@ -451,8 +427,8 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
         oa_results = oa.fetch_abstracts_batch(
             all_papers, db=db, doi_only=doi_only,
         )
-        batch_oa += len(oa_results)
-        console.print(f"  OpenAlex 成功: {batch_oa} 篇")
+        total_oa += len(oa_results)
+        console.print(f"  OpenAlex 成功: {total_oa} 篇")
 
         # ── Semantic Scholar 补充 ─────────────────────────────
         remaining_papers = [p for p in all_papers if p.dblp_key not in oa_results]
@@ -465,38 +441,17 @@ def paper_enrich(ctx, limit, stop_after, doi_only, fetch_references):
                 f"{doi_count} 篇有 DOI → batch)"
             )
             s2_results = s2.fetch_abstracts_batch(remaining_papers, db=db)
-            batch_s2 += len(s2_results)
-            batch_failed = len(remaining_papers) - len(s2_results)
+            total_s2 += len(s2_results)
+            total_failed = len(remaining_papers) - len(s2_results)
             console.print(
-                f"  S2 成功: {batch_s2} 篇"
-                + (f", 失败: {batch_failed} 篇" if batch_failed else "")
+                f"  S2 成功: {total_s2} 篇"
+                + (f", 失败: {total_failed} 篇" if total_failed else "")
             )
         elif remaining_papers and not s2_has_key:
-            batch_failed = len(remaining_papers)
+            total_failed = len(remaining_papers)
             console.print(
-                f"  [dim]未设置 S2_API_KEY, {batch_failed} 篇跳过[/]"
+                f"  [dim]未设置 S2_API_KEY, {total_failed} 篇跳过[/]"
             )
-
-        total_s2 += batch_s2
-        total_oa += batch_oa
-        total_failed += batch_failed
-
-        # Stagnation detection: stop if missing count didn't decrease
-        current_remaining = db.conn.execute(
-            """SELECT COUNT(*) as cnt FROM paper p
-               LEFT JOIN (SELECT DISTINCT paper_id FROM paper_topic) pt ON p.id = pt.paper_id
-               LEFT JOIN (SELECT DISTINCT paper_id FROM paper_reference) pr ON p.id = pr.paper_id
-               WHERE (p.abstract = '' OR p.abstract IS NULL)
-                  OR pt.paper_id IS NULL
-                  OR pr.paper_id IS NULL"""
-        ).fetchone()["cnt"]
-
-        if batch_num > 1 and current_remaining >= prev_remaining:
-            console.print(
-                f"[yellow]⚠ 缺失数未下降 ({current_remaining} 篇), 停止[/]"
-            )
-            break
-        prev_remaining = current_remaining
 
     # Final status
     final_na = total - db.count_papers_with_abstract()
