@@ -24,7 +24,7 @@ from rich.console import Console
 from rich.table import Table as RichTable
 
 from paper_database.classifier import LLMClassifier
-from paper_database.config import get_config, reload_config, TopicConfig
+from paper_database.config import get_config, reload_config, DeliberationConfig, TopicConfig
 from paper_database.db import Database
 from paper_database.exporter import Exporter
 from paper_database.fetcher.base import PaperMeta
@@ -635,8 +635,10 @@ def survey_reset(ctx, survey_id):
 @click.option("--no-export", is_flag=True, default=False, help="不自动导出 CSV")
 @click.option("--debug-paper", "-d", type=str, default=None,
               help="调试模式: 按论文标题(子串)或paper_id跑一次分类，结果只输出命令行，不保存数据库")
+@click.option("--deliberate", "-D", type=int, default=0,
+              help="磋商模式: 每篇论文跑 N 轮并行分类，投票决定最终结果 (建议奇数: 3/5/7)")
 @click.pass_context
-def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper):
+def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper, deliberate):
     """运行分类 (LLM API 并发), 完成后自动导出 CSV.
 
     支持断点续传: 中断后直接重新运行相同命令即可，已分类的论文自动跳过。
@@ -654,13 +656,30 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper):
         console.print(f"[red]✗[/] Topic '{s['topic_key']}' 配置不存在")
         sys.exit(1)
 
-    classifier = LLMClassifier(config.classifier)
+    # ── Build deliberation config ──────────────────────────
+    deliberation_cfg: Optional[DeliberationConfig] = None
+    if deliberate > 0:
+        deliberation_cfg = DeliberationConfig(
+            enabled=True,
+            rounds=deliberate,
+            strategy=config.classifier.deliberation.strategy,
+            temperature_override=config.classifier.deliberation.temperature_override,
+            supermajority_ratio=config.classifier.deliberation.supermajority_ratio,
+        )
+
+    classifier = LLMClassifier(config.classifier, deliberation=deliberation_cfg)
 
     # ── Debug mode: classify a single paper, print to stdout, no DB write ──
     if debug_paper:
-        console.print(
-            f"[yellow]DEBUG 模式[/] — \"{debug_paper}\" 分类，不保存数据库\n"
-        )
+        if deliberate > 1:
+            console.print(
+                f"[yellow]DEBUG 模式[/] — \"{debug_paper}\" 磋商分类 "
+                f"({deliberate} 轮投票)，不保存数据库\n"
+            )
+        else:
+            console.print(
+                f"[yellow]DEBUG 模式[/] — \"{debug_paper}\" 分类，不保存数据库\n"
+            )
 
         matches = survey_db.search_survey_papers(survey_id, debug_paper)
         if not matches:
@@ -701,19 +720,51 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper):
         console.print(f"[bold]  CCF:[/] {row.get('ccf_rank','')}")
         console.print(f"[bold]  Abstract:[/] {paper.abstract or '(无)'}")
 
-        prompt, raw_response, result = asyncio.run(
-            classifier.debug_classify_single(paper, topic_cfg)
+        prompt, raw_response, result, round_details = asyncio.run(
+            classifier.debug_classify_single(
+                paper, topic_cfg,
+                deliberation_rounds=deliberate if deliberate > 1 else 0,
+            )
         )
 
-        console.print(f"\n[bold]── Prompt ──[/]")
-        console.print(prompt)
-        console.print(f"\n[bold]── Raw API Response ──[/]")
-        console.print(raw_response)
-        console.print(f"\n[bold]── Parsed Result ──[/]")
-        console.print(f"  include: {result.include} ({'相关' if result.include else '不相关'})")
-        if result.extra:
-            for k, v in result.extra.items():
-                console.print(f"  {k}: {v}")
+        if round_details:
+            # ── Deliberation mode: show per-round + aggregated ──
+            console.print(f"\n[bold]══ 磋商结果 ({len(round_details)} 轮投票) ══[/]")
+            for rd in round_details:
+                if rd is None:
+                    console.print(f"  [red]Round:[/] [red]FAILED[/]")
+                    continue
+                r = rd["result"]
+                inc = "✓ 相关" if r.include else "✗ 不相关"
+                inc_color = "green" if r.include else "dim"
+                console.print(
+                    f"\n  [bold]── Round {rd['round']} ──[/] "
+                    f"[{inc_color}]{inc}[/]"
+                )
+                console.print(f"  [dim]Raw: {rd['raw_response'][:200]}[/]")
+                if r.extra:
+                    for k, v in r.extra.items():
+                        if not k.startswith("_"):
+                            console.print(f"    {k}: {v}")
+            # Print aggregated
+            console.print(f"\n[bold green]── 聚合结果 ──[/]")
+            inc = "✓ 相关" if result.include == 1 else ("✗ 不相关" if result.include == 0 else "? uncertain")
+            inc_color = "green" if result.include == 1 else ("dim" if result.include == 0 else "yellow")
+            console.print(f"  [{inc_color}]include: {result.include} ({inc})[/]")
+            if result.extra:
+                for k, v in result.extra.items():
+                    console.print(f"  {k}: {v}")
+        else:
+            # ── Single-round mode ──
+            console.print(f"\n[bold]── Prompt ──[/]")
+            console.print(prompt)
+            console.print(f"\n[bold]── Raw API Response ──[/]")
+            console.print(raw_response)
+            console.print(f"\n[bold]── Parsed Result ──[/]")
+            console.print(f"  include: {result.include} ({'相关' if result.include else '不相关'})")
+            if result.extra:
+                for k, v in result.extra.items():
+                    console.print(f"  {k}: {v}")
         return  # Don't run normal survey flow
 
     if dry_run:
@@ -721,10 +772,18 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper):
 
     stats = survey_db.survey_stats(survey_id)
     console.print(f"Survey #{survey_id}: {stats['unclassified']} 篇待分类")
-    console.print(
+    model_line = (
         f"[dim]Model: {config.classifier.model}, "
-        f"Concurrency: {config.classifier.max_concurrency}[/]"
+        f"Concurrency: {config.classifier.max_concurrency}"
     )
+    if classifier.deliberation.enabled:
+        model_line += (
+            f", Deliberation: {classifier.deliberation.rounds} rounds "
+            f"({classifier.deliberation.strategy})[/]"
+        )
+    else:
+        model_line += "[/]"
+    console.print(model_line)
 
     def progress_callback(done, _total, title, result):
         if result.include:

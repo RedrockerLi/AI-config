@@ -36,6 +36,21 @@ classifier:
   # 以下为 provider 未指定时的默认值
   max_concurrency: 32
 
+  # ── Deliberation: 多次询问 + 投票聚合，提升分类可靠性 ──────────
+  # enabled: true 时每篇论文跑 N 轮(并行)，投票决定最终结果
+  # rounds: 建议奇数 (3 / 5 / 7)
+  # strategy:
+  #   majority     — 多数决 (平局→收录，符合"宁可多收录"原则)
+  #   supermajority —  比例 ≥ supermajority_ratio 才收录
+  #   consensus    — 全票才收录，否则标记 uncertain
+  # temperature_override: >0 时覆盖默认温度，增加回答多样性 (0=沿用默认值)
+  deliberation:
+    enabled: false
+    rounds: 3
+    strategy: majority
+    temperature_override: 0.3
+    supermajority_ratio: 0.67
+
   # Retry / resilience
   timeout: 150
   max_retries: 3

@@ -11,12 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional, Callable
 
 import httpx
 
-from paper_database.config import ClassifierConfig, TopicConfig
+from paper_database.config import ClassifierConfig, DeliberationConfig, TopicConfig
 from paper_database.db import Database
 from paper_database.fetcher.base import PaperMeta
 
@@ -36,7 +37,7 @@ class ClassificationResult:
 class LLMClassifier:
     """Async classifier using LLM API calls (OpenAI-compatible) via httpx."""
 
-    def __init__(self, config: ClassifierConfig):
+    def __init__(self, config: ClassifierConfig, deliberation: Optional[DeliberationConfig] = None):
         self.api_base_url = config.api_base_url.rstrip("/")
         self.model = config.model
         self.max_tokens = config.max_tokens
@@ -47,6 +48,9 @@ class LLMClassifier:
         self.max_retries = config.max_retries
         self.strip_fence = config.strip_markdown_fence
 
+        # Deliberation config: param overrides file, file overrides default
+        self.deliberation = deliberation or config.deliberation
+
         self.api_key = config.api_key
         if not self.api_key:
             raise ValueError(
@@ -55,6 +59,10 @@ class LLMClassifier:
                 "或使用 {env:VAR_NAME} 引用环境变量。\n"
                 "配置示例: api_key: \"{env:API_KEY}\" 或 api_key: \"sk-your-key-here\""
             )
+
+        # Global semaphore caps total concurrent API calls across all workers.
+        # Essential when deliberation multiplies calls per paper.
+        self._api_semaphore = asyncio.Semaphore(self.max_concurrency)
 
         self._client = httpx.AsyncClient(
             base_url=self.api_base_url,
@@ -77,16 +85,176 @@ class LLMClassifier:
         return self._parse_response(output)
 
     async def debug_classify_single(
-        self, paper: PaperMeta, topic: TopicConfig
-    ) -> tuple[str, str, ClassificationResult]:
-        """Classify a single paper and return (prompt, raw_response, result).
+        self, paper: PaperMeta, topic: TopicConfig,
+        deliberation_rounds: int = 0,
+    ) -> tuple[str, str, ClassificationResult, list[dict] | None]:
+        """Classify a single paper and return (prompt, raw_response, result, rounds).
 
         For debugging: does NOT save to DB — caller prints results to stdout.
+
+        If ``deliberation_rounds`` > 1, runs N parallel rounds and returns
+        the aggregated result plus per-round details for display.
         """
         prompt = self._build_prompt(paper, topic)
+
+        if deliberation_rounds > 1:
+            result, round_details = await self.classify_with_deliberation(
+                paper, topic, return_details=True,
+            )
+            return prompt, "", result, round_details
+
         output = await self._call_api(prompt)
         result = self._parse_response(output)
-        return prompt, output, result
+        return prompt, output, result, None
+
+    # ── Deliberation (multi-round voting) ─────────────────────
+
+    async def classify_with_deliberation(
+        self, paper: PaperMeta, topic: TopicConfig,
+        return_details: bool = False,
+    ) -> ClassificationResult | tuple[ClassificationResult, list[dict]]:
+        """Run N parallel classification rounds and aggregate via voting.
+
+        Args:
+            paper: The paper to classify.
+            topic: Survey topic config (prompt template, etc.).
+            return_details: If True, also return per-round debug info.
+
+        Returns:
+            ClassificationResult if ``return_details=False``,
+            else (ClassificationResult, list[dict]) with per-round details.
+        """
+        n = self.deliberation.rounds
+
+        # Run N rounds in parallel
+        tasks = [self._classify_single_round(paper, topic, i) for i in range(n)]
+        round_results = await asyncio.gather(*tasks)
+
+        # Separate successes from failures
+        successes = [r for r in round_results if r is not None]
+        if not successes:
+            raise RuntimeError(
+                f"Deliberation: all {n} rounds failed for '{paper.title[:60]}'"
+            )
+
+        # Aggregate
+        result = self._aggregate_results(
+            [r["result"] for r in successes],
+            strategy=self.deliberation.strategy,
+        )
+
+        if return_details:
+            return result, round_results
+        return result
+
+    async def _classify_single_round(
+        self, paper: PaperMeta, topic: TopicConfig, round_idx: int,
+    ) -> dict | None:
+        """Run one classification round. Returns debug dict or None on failure.
+
+        Uses deliberation temperature override if configured (> 0).
+        Each round uses the existing worker-level retry (3 attempts).
+        """
+        temp_override = self.deliberation.temperature_override
+        for retry in range(3):
+            try:
+                prompt = self._build_prompt(paper, topic)
+                output = await self._call_api(prompt, temperature_override=temp_override)
+                result = self._parse_response(output)
+                return {
+                    "round": round_idx + 1,
+                    "prompt": prompt,
+                    "raw_response": output,
+                    "result": result,
+                }
+            except Exception:
+                if retry < 2:
+                    await asyncio.sleep(2 ** (retry + 1))
+        return None
+
+    def _aggregate_results(
+        self,
+        results: list[ClassificationResult],
+        strategy: str = "majority",
+    ) -> ClassificationResult:
+        """Aggregate multiple ClassificationResults via voting.
+
+        - ``include``: strategy-based voting (majority/supermajority/consensus).
+        - Categorical extra fields: most common value among the winning group.
+        - Free-text extra fields: value from the first winning-group result.
+
+        Confidence metadata (_deliberation_confidence, _deliberation_rounds)
+        is appended to ``extra``.
+        """
+        n = len(results)
+        if n == 0:
+            return ClassificationResult(include=0)
+
+        if n == 1:
+            r = results[0]
+            r.extra["_deliberation_confidence"] = "1/1"
+            r.extra["_deliberation_rounds"] = "1"
+            return r
+
+        include_votes = [r.include for r in results]
+        include_count = sum(include_votes)
+        exclude_count = n - include_count
+
+        # ── Determine include via strategy ─────────────────
+        if strategy == "consensus":
+            if include_count == n:
+                include = 1
+            elif include_count == 0:
+                include = 0
+            else:
+                include = -1  # uncertain — treated as exclude but flagged
+        elif strategy == "supermajority":
+            ratio = self.deliberation.supermajority_ratio
+            include = 1 if include_count / n >= ratio else 0
+        else:  # majority (default)
+            # Majority: > N/2 wins; ties → include ("宁可多收录")
+            include = 1 if include_count > n / 2 else 0
+
+        # ── Build winning group ────────────────────────────
+        if include == -1:
+            # consensus deadlock: use all results
+            winning = results
+        elif include == 1:
+            winning = [r for r in results if r.include == 1]
+            if not winning:
+                winning = results  # fallback for supermajority edge case
+        else:
+            winning = [r for r in results if r.include == 0]
+            if not winning:
+                winning = results
+
+        # ── Aggregate extra fields ─────────────────────────
+        extra: dict = {}
+
+        # Collect all keys across results
+        all_keys = set()
+        for r in winning:
+            all_keys.update(r.extra.keys())
+
+        # Skip internal metadata keys when aggregating
+        internal_keys = {"_deliberation_confidence", "_deliberation_rounds"}
+
+        for key in sorted(all_keys - internal_keys):
+            values = [r.extra.get(key, "") for r in winning if r.extra.get(key, "")]
+            if not values:
+                # Also check losing group
+                values = [r.extra.get(key, "") for r in results if r.extra.get(key, "")]
+            if values:
+                # Most common value
+                extra[key] = Counter(values).most_common(1)[0][0]
+            else:
+                extra[key] = ""
+
+        # ── Confidence metadata ────────────────────────────
+        extra["_deliberation_confidence"] = f"{include_count}/{n}"
+        extra["_deliberation_rounds"] = str(n)
+
+        return ClassificationResult(include=include, extra=extra)
 
     async def run_survey(
         self,
@@ -170,13 +338,26 @@ class LLMClassifier:
 
                     # ── Classify (with immediate retry) ─────────
                     result = None
-                    for retry in range(3):
-                        try:
-                            result = await self.classify_single(paper, topic)
-                            break
-                        except Exception:
-                            if retry < 2:
-                                await asyncio.sleep(2 ** (retry + 1))
+                    if self.deliberation.enabled:
+                        # Multi-round deliberation: N parallel calls + voting
+                        for retry in range(3):
+                            try:
+                                result = await self.classify_with_deliberation(
+                                    paper, topic,
+                                )
+                                break
+                            except Exception:
+                                if retry < 2:
+                                    await asyncio.sleep(2 ** (retry + 1))
+                    else:
+                        # Single-round classification
+                        for retry in range(3):
+                            try:
+                                result = await self.classify_single(paper, topic)
+                                break
+                            except Exception:
+                                if retry < 2:
+                                    await asyncio.sleep(2 ** (retry + 1))
                     if result is None:
                         # All retries failed — paper stays 'claimed' in DB
                         # but will be reset to 'unclaimed' on next restart
@@ -263,8 +444,16 @@ class LLMClassifier:
         )
         return system + "\n" + body
 
-    async def _call_api(self, prompt: str) -> str:
-        """Call chat completions API. Returns JSON string from content."""
+    async def _call_api(self, prompt: str, temperature_override: float = 0.0) -> str:
+        """Call chat completions API. Returns JSON string from content.
+
+        Guarded by a global semaphore to cap total concurrent API calls
+        across all workers (essential when deliberation multiplies calls).
+
+        Args:
+            prompt: The full prompt to send.
+            temperature_override: If > 0, use this temperature instead of default.
+        """
         messages = [{"role": "user", "content": prompt}]
         body: dict = {
             "model": self.model,
@@ -274,7 +463,7 @@ class LLMClassifier:
         }
 
         # deepseek-v4-pro supports both temperature and thinking mode
-        body["temperature"] = self.temperature
+        body["temperature"] = temperature_override if temperature_override > 0 else self.temperature
 
         if self.enable_thinking:
             body["thinking"] = {"type": "enabled"}
@@ -283,10 +472,11 @@ class LLMClassifier:
 
         for attempt in range(self.max_retries):
             try:
-                response = await self._client.post(
-                    "/v1/chat/completions",
-                    json=body,
-                )
+                async with self._api_semaphore:
+                    response = await self._client.post(
+                        "/v1/chat/completions",
+                        json=body,
+                    )
                 response.raise_for_status()
                 data = response.json()
                 content = data["choices"][0]["message"]["content"]

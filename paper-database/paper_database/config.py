@@ -130,6 +130,29 @@ class ProviderConfig:
 
 
 @dataclass
+class DeliberationConfig:
+    """Multi-round deliberation settings for improving classification reliability."""
+
+    enabled: bool = False
+    rounds: int = 3             # odd number recommended (3, 5, 7)
+    strategy: str = "majority"  # "majority" | "supermajority" | "consensus"
+    temperature_override: float = 0.0  # 0.0 = use classifier default temperature
+    supermajority_ratio: float = 0.67  # for supermajority strategy
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DeliberationConfig":
+        if not d:
+            return cls()
+        return cls(
+            enabled=d.get("enabled", False),
+            rounds=d.get("rounds", 3),
+            strategy=d.get("strategy", "majority"),
+            temperature_override=d.get("temperature_override", 0.0),
+            supermajority_ratio=d.get("supermajority_ratio", 0.67),
+        )
+
+
+@dataclass
 class ClassifierConfig:
     provider: str = "deepseek"
     api_base_url: str = "https://api.deepseek.com"
@@ -142,6 +165,7 @@ class ClassifierConfig:
     timeout: int = 60
     max_retries: int = 3
     strip_markdown_fence: bool = True
+    deliberation: DeliberationConfig = field(default_factory=DeliberationConfig)
 
     @classmethod
     def from_dict(cls, d: dict) -> "ClassifierConfig":
@@ -173,6 +197,7 @@ class ClassifierConfig:
             timeout=d.get("timeout", 60),
             max_retries=d.get("max_retries", 3),
             strip_markdown_fence=d.get("strip_markdown_fence", True),
+            deliberation=DeliberationConfig.from_dict(d.get("deliberation", {})),
         )
 
 
