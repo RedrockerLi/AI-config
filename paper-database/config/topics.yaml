@@ -104,6 +104,45 @@ topics:
       如果没有新的调度机制，也不要收录。
 
       =========================
+      优先级分级（S / A / B）
+      =========================
+
+      研究兴趣：粗粒度可重构架构（CGRAs）、数据流架构、空间架构上的调度。
+
+      S（Strong Match）— 与研究方向高度相关，必须精读：
+      - CGRA（Coarse-Grained Reconfigurable Architecture）
+      - Dataflow Architecture
+      - Spatial Architecture
+      - Mapping + Scheduling
+      - Operation Scheduling
+      - PE Scheduling
+      - Runtime Scheduling for CGRA/Dataflow
+      → 直接 Related Work，必须深入分析。
+
+      A（Architecture Scheduling）— 与体系结构调度相关，值得阅读：
+      - GPU
+      - Accelerator
+      - PIM / Near-Memory Computing
+      - Memory Scheduling
+      - NoC Scheduling
+      - Instruction Scheduling
+      - Multicore Scheduling
+      - Compiler Scheduling（Architecture-Oriented）
+      → 可能借鉴思想，与研究方向有交叉。
+
+      B（General Scheduling）— 调度相关但与体系结构联系较弱：
+      - Operating System
+      - Cloud Computing
+      - Distributed Systems
+      - Database
+      - Storage
+      - Network Services
+      - Workflow
+      - Real-time Systems
+      - 其他与体系结构联系较弱的调度研究
+      → 除非特别经典，否则可以不看。
+
+      =========================
       Level 分类
       =========================
 
@@ -244,6 +283,7 @@ topics:
       输出 JSON，不要输出任何解释文字,格式如下：
 
       {{
+        "priority": "……",
         "level": "……",
         "platform": "……",
         "problem_goal": "……",
@@ -271,6 +311,9 @@ topics:
         - field: paper_doi
           header: "链接"
           width: 30
+        - field: priority
+          header: "优先级"
+          width: 8
         - field: level
           header: "Level"
           width: 14

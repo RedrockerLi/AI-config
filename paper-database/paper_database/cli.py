@@ -665,14 +665,8 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export):
     )
 
     def progress_callback(done, _total, title, result):
-        # Show first extra field value as hint (e.g. priority or algorithm)
-        hint = ""
-        if result.extra:
-            first_val = next((v for v in result.extra.values() if v), "")
-            if first_val:
-                hint = f" [{first_val[:40]}]"
         if result.include:
-            status = f"[green]✓{hint}[/]"
+            status = "[green]✓[/]"
         else:
             status = "[dim]✗[/]"
         console.print(f"  [{done}] {status} {title[:70]}...")
