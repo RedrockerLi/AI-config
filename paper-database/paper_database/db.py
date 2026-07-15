@@ -647,6 +647,60 @@ class Database:
 
         return [dict(r) for r in rows]
 
+    def get_survey_paper(
+        self, survey_id: int, paper_id: int
+    ) -> Optional[dict]:
+        """Get a single paper with venue info from a survey DB (for debug)."""
+        row = self.conn.execute(
+            """SELECT sr.id as result_id, sr.paper_id,
+                      p.title, p.year, p.authors, p.doi, p.abstract,
+                      p.citation_count, p.dblp_key,
+                      v.name as venue_name, v.key as venue_key, v.ccf_rank
+               FROM survey_result sr
+               JOIN paper p ON sr.paper_id = p.id
+               JOIN venue v ON p.venue_id = v.id
+               WHERE sr.survey_id = ? AND sr.paper_id = ?""",
+            (survey_id, paper_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def search_survey_papers(
+        self, survey_id: int, query: str
+    ) -> list[dict]:
+        """Search survey papers by title substring or exact paper_id.
+
+        If ``query`` is a pure integer, matches paper_id exactly.
+        Otherwise does a LIKE '%query%' on paper.title.
+        Returns list of paper dicts (may be empty).
+        """
+        if query.isdigit():
+            row = self.conn.execute(
+                """SELECT sr.id as result_id, sr.paper_id,
+                          p.title, p.year, p.authors, p.doi, p.abstract,
+                          p.citation_count, p.dblp_key,
+                          v.name as venue_name, v.key as venue_key, v.ccf_rank
+                   FROM survey_result sr
+                   JOIN paper p ON sr.paper_id = p.id
+                   JOIN venue v ON p.venue_id = v.id
+                   WHERE sr.survey_id = ? AND sr.paper_id = ?""",
+                (survey_id, int(query)),
+            ).fetchone()
+            return [dict(row)] if row else []
+
+        rows = self.conn.execute(
+            """SELECT sr.id as result_id, sr.paper_id,
+                      p.title, p.year, p.authors, p.doi, p.abstract,
+                      p.citation_count, p.dblp_key,
+                      v.name as venue_name, v.key as venue_key, v.ccf_rank
+               FROM survey_result sr
+               JOIN paper p ON sr.paper_id = p.id
+               JOIN venue v ON p.venue_id = v.id
+               WHERE sr.survey_id = ? AND p.title LIKE ?
+               ORDER BY v.ccf_rank, p.year DESC""",
+            (survey_id, f"%{query}%"),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def mark_paper_classified(self, paper_id: int):
         """Mark a paper's flag as 'classified' after survey_result is written."""
         self.conn.execute(

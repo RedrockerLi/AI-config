@@ -76,6 +76,18 @@ class LLMClassifier:
         output = await self._call_api(prompt)
         return self._parse_response(output)
 
+    async def debug_classify_single(
+        self, paper: PaperMeta, topic: TopicConfig
+    ) -> tuple[str, str, ClassificationResult]:
+        """Classify a single paper and return (prompt, raw_response, result).
+
+        For debugging: does NOT save to DB — caller prints results to stdout.
+        """
+        prompt = self._build_prompt(paper, topic)
+        output = await self._call_api(prompt)
+        result = self._parse_response(output)
+        return prompt, output, result
+
     async def run_survey(
         self,
         db: Database,

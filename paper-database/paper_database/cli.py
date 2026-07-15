@@ -633,8 +633,10 @@ def survey_reset(ctx, survey_id):
 @click.option("--dry-run", is_flag=True, default=False, help="只打印 prompt，不实际调 API")
 @click.option("--limit", "-l", type=int, default=None, help="最大分类数量")
 @click.option("--no-export", is_flag=True, default=False, help="不自动导出 CSV")
+@click.option("--debug-paper", "-d", type=str, default=None,
+              help="调试模式: 按论文标题(子串)或paper_id跑一次分类，结果只输出命令行，不保存数据库")
 @click.pass_context
-def survey_classify(ctx, survey_id, dry_run, limit, no_export):
+def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper):
     """运行分类 (LLM API 并发), 完成后自动导出 CSV.
 
     支持断点续传: 中断后直接重新运行相同命令即可，已分类的论文自动跳过。
@@ -653,6 +655,66 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export):
         sys.exit(1)
 
     classifier = LLMClassifier(config.classifier)
+
+    # ── Debug mode: classify a single paper, print to stdout, no DB write ──
+    if debug_paper:
+        console.print(
+            f"[yellow]DEBUG 模式[/] — \"{debug_paper}\" 分类，不保存数据库\n"
+        )
+
+        matches = survey_db.search_survey_papers(survey_id, debug_paper)
+        if not matches:
+            console.print(
+                f"[red]✗[/] 在 Survey #{survey_id} 中未找到匹配 \"{debug_paper}\" 的论文"
+            )
+            sys.exit(1)
+
+        if len(matches) > 1:
+            console.print(
+                f"[yellow]⚠[/] 匹配到 {len(matches)} 篇论文，请用更精确的关键词或 paper_id:\n"
+            )
+            for m in matches:
+                title = m["title"]
+                if len(title) > 80:
+                    title = title[:77] + "..."
+                console.print(
+                    f"  [bold]{m['paper_id']}[/]: {title} "
+                    f"[dim]({m.get('venue_name','')} {m['year']})[/]"
+                )
+            sys.exit(1)
+
+        row = matches[0]
+
+        paper = PaperMeta(
+            title=row["title"], year=row["year"],
+            authors=json.loads(row["authors"]),
+            dblp_key=row["dblp_key"],
+            doi=row.get("doi", "") or "",
+            venue=row.get("venue_key", ""),
+            abstract=row.get("abstract", "") or "",
+            citation_count=row.get("citation_count", 0),
+        )
+
+        console.print(f"[bold]Paper:[/] {paper.title}")
+        console.print(f"[bold]  ID:[/] {row['paper_id']}")
+        console.print(f"[bold]  Venue:[/] {row.get('venue_name','')} ({row['year']})")
+        console.print(f"[bold]  CCF:[/] {row.get('ccf_rank','')}")
+        console.print(f"[bold]  Abstract:[/] {paper.abstract or '(无)'}")
+
+        prompt, raw_response, result = asyncio.run(
+            classifier.debug_classify_single(paper, topic_cfg)
+        )
+
+        console.print(f"\n[bold]── Prompt ──[/]")
+        console.print(prompt)
+        console.print(f"\n[bold]── Raw API Response ──[/]")
+        console.print(raw_response)
+        console.print(f"\n[bold]── Parsed Result ──[/]")
+        console.print(f"  include: {result.include} ({'相关' if result.include else '不相关'})")
+        if result.extra:
+            for k, v in result.extra.items():
+                console.print(f"  {k}: {v}")
+        return  # Don't run normal survey flow
 
     if dry_run:
         console.print("[yellow]DRY RUN 模式 — 只打印 prompt，不调 API[/]\n")
