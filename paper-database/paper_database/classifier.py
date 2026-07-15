@@ -476,7 +476,7 @@ class LLMClassifier:
             "model": self.model,
             "messages": messages,
             "max_tokens": self.max_tokens,
-            "response_format": {"type": "json_object"},
+            "response_format": {"type": "text"},
         }
 
         # deepseek-v4-pro supports both temperature and thinking mode
