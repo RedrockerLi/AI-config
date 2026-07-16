@@ -646,6 +646,27 @@ def survey_stats(ctx, survey_id):
     console.print(f"  相关: {stats['relevant']}")
     console.print(f"  不相关: {stats['not_relevant']}")
 
+    # ── Deliberation field distributions ─────────────────
+    config = _resolve_config(ctx.obj["config_dir"])
+    topic_cfg = config.get_topic(s["topic_key"])
+    if topic_cfg:
+        deliberation_cols = [
+            c for c in topic_cfg.output.columns if c.deliberation
+        ]
+        if deliberation_cols:
+            total_relevant = stats["relevant"]
+            console.print(f"\n[bold]字段分布 (已收录 {total_relevant} 篇):[/]")
+            for col in deliberation_cols:
+                dist = survey_db.column_distribution(survey_id, col.field)
+                if not dist:
+                    continue
+                console.print(f"  [bold cyan]{col.header}[/] ({col.field}):")
+                for item in dist:
+                    pct = item["cnt"] / total_relevant * 100 if total_relevant > 0 else 0
+                    console.print(
+                        f"    {item['value']}: {item['cnt']} ({pct:.1f}%)"
+                    )
+
 
 @survey.command("delete")
 @click.option("--survey-id", "-s", type=int, required=True)

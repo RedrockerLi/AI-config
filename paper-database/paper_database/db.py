@@ -1099,6 +1099,33 @@ class Database:
             "eta": eta,
         }
 
+    def column_distribution(
+        self, survey_id: int, column: str, include_only: bool = True,
+    ) -> list[dict]:
+        """Return value distribution for a survey_result column.
+
+        Args:
+            survey_id: Survey ID.
+            column: Column name (must be a valid survey_result column).
+            include_only: If True, only count papers with include=1.
+
+        Returns:
+            List of {value, count} dicts sorted by count descending.
+        """
+        if column not in self._survey_columns:
+            return []
+        where = "survey_id = ?"
+        params: list = [survey_id]
+        if include_only:
+            where += " AND include = 1"
+        sql = (
+            f"SELECT {column} as value, COUNT(*) as cnt "
+            f"FROM survey_result WHERE {where} AND {column} != '' "
+            f"GROUP BY {column} ORDER BY cnt DESC"
+        )
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     def get_unclassified(
         self, survey_id: int, limit: int = 50
     ) -> list[dict]:
