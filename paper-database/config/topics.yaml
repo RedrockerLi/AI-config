@@ -41,6 +41,14 @@ topics:
       引用文献:
       {references}
 
+      **重要**：
+      辅助信息不能作为论文分类的直接证据。
+      分类必须主要依据论文标题和论文摘要。
+      禁止仅因为论文引用了某个领域的相关工作，
+      就推断该论文属于该领域或某个分类。
+
+      **以上信息仅用于辅助理解论文的研究背景和相关工作脉络。**
+
       =========================
       调度的定义（按行为判断，而非关键词）
       =========================
@@ -272,12 +280,15 @@ topics:
         - field: priority
           header: "优先级"
           width: 8
+          deliberation: true
         - field: level
           header: "Level"
           width: 14
+          deliberation: true
         - field: platform
           header: "Platform"
           width: 16
+          deliberation: true
         - field: problem_goal
           header: "问题/目标"
           width: 50

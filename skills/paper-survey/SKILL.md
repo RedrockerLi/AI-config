@@ -73,7 +73,7 @@ version: 0.3.0
 | `--deliberate N` / `-D N` | 磋商模式：每篇跑 N 轮并行分类，投票聚合结果。建议奇数 3/5/7 |
 | `--debug-paper "..."` / `-d` | 调试模式：按标题或 paper_id 查找论文，展示完整 prompt+响应，不写数据库 |
 
-**磋商机制**：LLM 输出有随机性。`--deliberate 3` 每篇论文并行跑 3 轮 → 多数投票决定 include → 分类字段取多数值。结果记录置信度（如 `_deliberation_confidence: 2/3`）。三种投票策略可配置（`config/classifier.yaml` → `deliberation.strategy`）：`majority` / `supermajority` / `consensus`。
+**磋商机制**：LLM 输出有随机性。`--deliberate 3` 每篇论文并行跑 3 轮 → 多数投票决定 include → 枚举字段取多数值，自由文本字段取最优轮次的值。三种投票策略可配置（`config/classifier.yaml` → `deliberation.strategy`）：`majority` / `supermajority` / `consensus`。
 
 **断点续传**：中断后直接重新运行相同命令即可，已分类的论文自动跳过，无需 `--start` 参数。
 ```bash

@@ -138,9 +138,13 @@ class LLMClassifier:
             )
 
         # Aggregate
+        deliberation_fields = {
+            col.field for col in topic.output.columns if col.deliberation
+        }
         result = self._aggregate_results(
             [r["result"] for r in successes],
             strategy=self.deliberation.strategy,
+            deliberation_fields=deliberation_fields,
         )
 
         if return_details:
@@ -176,29 +180,27 @@ class LLMClassifier:
         self,
         results: list[ClassificationResult],
         strategy: str = "majority",
+        deliberation_fields: set[str] | None = None,
     ) -> ClassificationResult:
         """Aggregate multiple ClassificationResults via voting.
 
         - ``include``: strategy-based voting (majority/supermajority/consensus).
-        - Categorical extra fields: most common value among the winning group.
-        - Free-text extra fields: value from the first winning-group result.
-
-        Confidence metadata (_deliberation_confidence, _deliberation_rounds)
-        is appended to ``extra``.
+        - Fields in ``deliberation_fields``: most common value among winning group.
+        - Free-text fields (not in deliberation_fields): value from the round whose
+          deliberation-field answers best match the final aggregated values.
         """
+        if deliberation_fields is None:
+            deliberation_fields = set()
+
         n = len(results)
         if n == 0:
             return ClassificationResult(include=0)
 
         if n == 1:
-            r = results[0]
-            r.extra["_deliberation_confidence"] = "1/1"
-            r.extra["_deliberation_rounds"] = "1"
-            return r
+            return results[0]
 
         include_votes = [r.include for r in results]
         include_count = sum(include_votes)
-        exclude_count = n - include_count
 
         # ── Determine include via strategy ─────────────────
         if strategy == "consensus":
@@ -230,26 +232,41 @@ class LLMClassifier:
 
         # Collect all keys across results
         all_keys = set()
-        for r in winning:
+        for r in results:
             all_keys.update(r.extra.keys())
 
-        # Skip internal metadata keys when aggregating
-        internal_keys = {"_deliberation_confidence", "_deliberation_rounds"}
-
-        for key in sorted(all_keys - internal_keys):
+        # Step 1: Deliberation fields — vote within winning group
+        for key in sorted(all_keys & deliberation_fields):
             values = [r.extra.get(key, "") for r in winning if r.extra.get(key, "")]
             if not values:
-                # Also check losing group
                 values = [r.extra.get(key, "") for r in results if r.extra.get(key, "")]
             if values:
-                # Most common value
                 extra[key] = Counter(values).most_common(1)[0][0]
             else:
                 extra[key] = ""
 
-        # ── Confidence metadata ────────────────────────────
-        extra["_deliberation_confidence"] = f"{include_count}/{n}"
-        extra["_deliberation_rounds"] = str(n)
+        # Step 2: Score each round by deliberation-field match count
+        best_idx = 0
+        best_score = -1
+        for i, r in enumerate(results):
+            score = sum(
+                1 for key in deliberation_fields
+                if r.extra.get(key, "") == extra.get(key, "")
+            )
+            if score > best_score:
+                best_score = score
+                best_idx = i
+
+        # Step 3: Free-text fields — use best-matching round's values
+        for key in sorted(all_keys - deliberation_fields):
+            val = results[best_idx].extra.get(key, "")
+            if not val:
+                # Fallback: pick first non-empty value from any round
+                for r in results:
+                    val = r.extra.get(key, "")
+                    if val:
+                        break
+            extra[key] = val
 
         return ClassificationResult(include=include, extra=extra)
 
