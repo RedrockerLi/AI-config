@@ -809,8 +809,8 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper, deli
                             console.print(f"    {k}: {v}")
             # Print aggregated
             console.print(f"\n[bold green]── 聚合结果 ──[/]")
-            inc = "✓ 相关" if result.include == 1 else ("✗ 不相关" if result.include == 0 else "? uncertain")
-            inc_color = "green" if result.include == 1 else ("dim" if result.include == 0 else "yellow")
+            inc = "✓ 相关" if result.include == 1 else "✗ 不相关"
+            inc_color = "green" if result.include == 1 else "dim"
             console.print(f"  [{inc_color}]include: {result.include} ({inc})[/]")
             if result.extra:
                 for k, v in result.extra.items():

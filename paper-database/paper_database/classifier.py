@@ -207,7 +207,7 @@ class LLMClassifier:
             elif include_count == 0:
                 include = 0
             else:
-                include = -1  # uncertain — treated as exclude but flagged
+                include = 0  # consensus not reached → exclude
         elif strategy == "supermajority":
             ratio = self.deliberation.supermajority_ratio
             include = 1 if include_count / n >= ratio else 0
@@ -216,10 +216,7 @@ class LLMClassifier:
             include = 1 if include_count > n / 2 else 0
 
         # ── Build winning group ────────────────────────────
-        if include == -1:
-            # consensus deadlock: use all results
-            winning = results
-        elif include == 1:
+        if include == 1:
             winning = [r for r in results if r.include == 1]
             if not winning:
                 winning = results  # fallback for supermajority edge case

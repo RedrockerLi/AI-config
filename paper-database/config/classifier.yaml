@@ -42,12 +42,12 @@ classifier:
   # strategy:
   #   majority     — 多数决 (平局→收录，符合"宁可多收录"原则)
   #   supermajority —  比例 ≥ supermajority_ratio 才收录
-  #   consensus    — 全票才收录，否则标记 uncertain
+  #   consensus    — 全票才收录，否则排除
   # temperature_override: >0 时覆盖默认温度，增加回答多样性 (0=沿用默认值)
   deliberation:
     enabled: false
     rounds: 3
-    strategy: majority
+    strategy: consensus
     temperature_override: 0.3
     supermajority_ratio: 0.67
 
