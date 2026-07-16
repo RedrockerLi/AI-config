@@ -736,14 +736,57 @@ class Database:
             survey_db.conn.execute(
                 """INSERT INTO paper (id, dblp_key, title, year, venue_id,
                    authors, doi, abstract, abstract_source, citation_count,
-                   fetched_at, abstract_fetched_at, flag)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed')""",
+                   fetched_at, abstract_fetched_at, flag, ref_ids, s2_refs)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)""",
                 (row["id"], row["dblp_key"], row["title"], row["year"],
                  row["venue_id"], row["authors"], row["doi"],
                  row["abstract"], row["abstract_source"],
                  row["citation_count"], row["fetched_at"],
-                 row["abstract_fetched_at"]),
+                 row["abstract_fetched_at"],
+                 row["ref_ids"], row["s2_refs"]),
             )
+
+        # Copy paper_topic rows for the selected papers
+        paper_ids = [row["id"] for row in paper_rows]
+        if paper_ids:
+            placeholders = ",".join("?" * len(paper_ids))
+            topic_rows = self.conn.execute(
+                f"""SELECT * FROM paper_topic
+                    WHERE paper_id IN ({placeholders})""",
+                paper_ids,
+            ).fetchall()
+            for tr in topic_rows:
+                survey_db.conn.execute(
+                    """INSERT OR IGNORE INTO paper_topic
+                       (paper_id, source, topic, score)
+                       VALUES (?, ?, ?, ?)""",
+                    (tr["paper_id"], tr["source"], tr["topic"], tr["score"]),
+                )
+
+            # Copy reference_work entries for ref_ids used by these papers
+            ref_ids_set: set[str] = set()
+            for row in paper_rows:
+                if row["ref_ids"]:
+                    for oid in row["ref_ids"].split(","):
+                        if oid.strip():
+                            ref_ids_set.add(oid.strip())
+            if ref_ids_set:
+                id_list = list(ref_ids_set)
+                for i in range(0, len(id_list), 500):
+                    chunk = id_list[i:i + 500]
+                    rw_placeholders = ",".join("?" * len(chunk))
+                    rw_rows = self.conn.execute(
+                        f"""SELECT * FROM reference_work
+                            WHERE openalex_id IN ({rw_placeholders})""",
+                        chunk,
+                    ).fetchall()
+                    for rw in rw_rows:
+                        survey_db.conn.execute(
+                            """INSERT OR IGNORE INTO reference_work
+                               (openalex_id, title, resolved)
+                               VALUES (?, ?, ?)""",
+                            (rw["openalex_id"], rw["title"], rw["resolved"]),
+                        )
 
         # Topic snapshot
         topic_snapshot = json.dumps({

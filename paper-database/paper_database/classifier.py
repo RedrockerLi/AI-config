@@ -303,6 +303,8 @@ class LLMClassifier:
                             authors=json.loads(row["authors"]),
                             dblp_key=row["dblp_key"],
                             abstract=row.get("abstract", "") or "",
+                            topics=db.get_paper_topics(row["paper_id"]),
+                            references=db.get_paper_references(row["paper_id"]),
                         )
                         prompt = self._build_prompt(paper, topic)
                         print(f"\n{'='*60}")

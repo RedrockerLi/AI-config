@@ -774,6 +774,13 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper, deli
             for ref in paper.references[:5]:
                 console.print(f"    - {ref[:80]}")
 
+        # ── Dry-run: just print prompt ──────────────────────
+        if dry_run:
+            prompt = classifier._build_prompt(paper, topic_cfg)
+            console.print(f"\n[bold]── Prompt (dry-run) ──[/]")
+            console.print(prompt)
+            return
+
         prompt, raw_response, result, round_details = asyncio.run(
             classifier.debug_classify_single(
                 paper, topic_cfg,
