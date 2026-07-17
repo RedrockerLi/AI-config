@@ -157,7 +157,8 @@ class DeliberationConfig:
 
 
 @dataclass
-class ClassifierConfig:
+class LLMConfig:
+    """LLM API configuration shared by classifier and translator."""
     provider: str = "deepseek"
     api_base_url: str = "https://api.deepseek.com"
     api_key: str = ""
@@ -172,7 +173,7 @@ class ClassifierConfig:
     deliberation: DeliberationConfig = field(default_factory=DeliberationConfig)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "ClassifierConfig":
+    def from_dict(cls, d: dict) -> "LLMConfig":
         provider_name = d.get("provider", "deepseek")
 
         # Load provider-specific settings
@@ -214,14 +215,14 @@ class Config:
         self.config_dir = Path(config_dir)
         self.venues: list[VenueConfig] = []
         self.topics: list[TopicConfig] = []
-        self.classifier: ClassifierConfig = ClassifierConfig()
+        self.llm: LLMConfig = LLMConfig()
         self._loaded = False
 
     def load(self) -> "Config":
         """Load all config files from config_dir."""
         self.venues = self._load_venues()
         self.topics = self._load_topics()
-        self.classifier = self._load_classifier()
+        self.llm = self._load_llm()
         self._loaded = True
         return self
 
@@ -240,9 +241,9 @@ class Config:
         data = self._load_yaml("topics.yaml")
         return [TopicConfig.from_dict(t) for t in data.get("topics", [])]
 
-    def _load_classifier(self) -> ClassifierConfig:
-        data = self._load_yaml("classifier.yaml")
-        return ClassifierConfig.from_dict(data.get("classifier", {}))
+    def _load_llm(self) -> LLMConfig:
+        data = self._load_yaml("llm.yaml")
+        return LLMConfig.from_dict(data.get("llm", {}))
 
     def get_topic(self, key: str) -> Optional[TopicConfig]:
         for t in self.topics:

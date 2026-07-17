@@ -569,7 +569,7 @@ def paper_translate(ctx, limit, concurrency):
     if actual_limit:
         console.print(f"  本批上限:   {actual_limit}")
 
-    translator = Translator(config.classifier, max_concurrency=concurrency)
+    translator = Translator(config.llm, max_concurrency=concurrency)
 
     def progress_cb(done, _total, title, status):
         t = title[:70]
@@ -639,7 +639,7 @@ def survey_create(ctx, topic, name, venue_filter, year_filter):
     try:
         survey_db = paper_db.create_survey_db(
             survey_id, survey_name, topic_cfg,
-            cli_tool=config.classifier.model,
+            cli_tool=config.llm.model,
             venue_filter=vf, year_filter=yf,
         )
     except ValueError as e:
@@ -787,12 +787,12 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper, deli
         deliberation_cfg = DeliberationConfig(
             enabled=True,
             rounds=deliberate,
-            strategy=config.classifier.deliberation.strategy,
-            temperature_override=config.classifier.deliberation.temperature_override,
-            supermajority_ratio=config.classifier.deliberation.supermajority_ratio,
+            strategy=config.llm.deliberation.strategy,
+            temperature_override=config.llm.deliberation.temperature_override,
+            supermajority_ratio=config.llm.deliberation.supermajority_ratio,
         )
 
-    classifier = LLMClassifier(config.classifier, deliberation=deliberation_cfg)
+    classifier = LLMClassifier(config.llm, deliberation=deliberation_cfg)
 
     # ── Debug mode: classify a single paper, print to stdout, no DB write ──
     if debug_paper:
@@ -914,8 +914,8 @@ def survey_classify(ctx, survey_id, dry_run, limit, no_export, debug_paper, deli
     stats = survey_db.survey_stats(survey_id)
     console.print(f"Survey #{survey_id}: {stats['unclassified']} 篇待分类")
     model_line = (
-        f"[dim]Model: {config.classifier.model}, "
-        f"Concurrency: {config.classifier.max_concurrency}"
+        f"[dim]Model: {config.llm.model}, "
+        f"Concurrency: {config.llm.max_concurrency}"
     )
     if classifier.deliberation.enabled:
         model_line += (
@@ -1076,7 +1076,7 @@ def survey_translate(ctx, survey_id, limit, concurrency):
     if actual_limit:
         console.print(f"  本批上限:   {actual_limit}")
 
-    translator = Translator(config.classifier, max_concurrency=concurrency)
+    translator = Translator(config.llm, max_concurrency=concurrency)
 
     def progress_cb(done, _total, title, status):
         t = title[:70]

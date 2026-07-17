@@ -21,7 +21,7 @@ version: 0.4.0
 
 - 文献库已有论文数据（用 `paper-database` 建库）
 - `$PAPER_DATABASE_HOME` 指向项目根目录
-- 分类器已配置 `config/classifier.yaml`
+- 分类器已配置 `config/llm.yaml`
 
 ## 命令速查
 
@@ -82,7 +82,7 @@ python -m paper_database survey classify -s X
 python -m paper_database survey classify -s X --deliberate 3
 ```
 
-LLM 有随机性，`--deliberate N` 每篇并行 N 轮 → 投票聚合。策略: `majority`/`supermajority`/`consensus` (在 `config/classifier.yaml` 配置)。
+LLM 有随机性，`--deliberate N` 每篇并行 N 轮 → 投票聚合。策略: `majority`/`supermajority`/`consensus` (在 `config/llm.yaml` 配置)。
 
 ### 调试分类效果
 

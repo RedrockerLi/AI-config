@@ -1,4 +1,4 @@
-# 分类器配置 — 多 provider 支持
+# LLM 配置 — 多 provider 支持（分类器和翻译器共用）
 #
 # provider 字段选择当前使用的 LLM 提供商。
 # 每个 provider 在 providers 下独立配置专属参数。
@@ -8,7 +8,7 @@
 # enable_thinking: true 时输出思维链推理内容
 # 思考模式文档: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
 
-classifier:
+llm:
   # ── 当前使用的 provider ──────────────────────────────────────
   provider: localhost
 
@@ -36,7 +36,7 @@ classifier:
   # 以下为 provider 未指定时的默认值
   max_concurrency: 32
 
-  # ── Deliberation: 多次询问 + 投票聚合，提升分类可靠性 ──────────
+  # 分类专用 — 磋商投票策略 (仅分类器使用)
   # enabled: true 时每篇论文跑 N 轮(并行)，投票决定最终结果
   # rounds: 建议奇数 (3 / 5 / 7)
   # strategy:

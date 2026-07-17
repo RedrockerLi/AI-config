@@ -50,7 +50,7 @@ python -m paper_database survey delete -s X
 python -m paper_database survey classify -s 1 --deliberate 3   # 每篇并行 3 轮投票
 ```
 
-策略配置在 `config/classifier.yaml`：`majority` / `supermajority` / `consensus`。
+策略配置在 `config/llm.yaml`：`majority` / `supermajority` / `consensus`。
 
 ## Markdown 导出
 
@@ -68,12 +68,12 @@ python -m paper_database survey export-md -s 1      # → results/survey_1_md/*.
 |------|------|
 | `venues.yaml` | 会议/期刊定义，预填 22 个 CCF-A/B venue |
 | `topics.yaml` | 调研主题：prompt template + 输出字段 (columns) |
-| `classifier.yaml` | LLM provider 多配置 + 磋商策略 |
+| `llm.yaml` | LLM provider 多配置 + 磋商策略 |
 
 **分类器示例：**
 
 ```yaml
-classifier:
+llm:
   provider: deepseek
   providers:
     deepseek:

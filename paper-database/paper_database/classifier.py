@@ -17,7 +17,7 @@ from typing import Optional, Callable
 
 import httpx
 
-from paper_database.config import ClassifierConfig, DeliberationConfig, TopicConfig
+from paper_database.config import LLMConfig, DeliberationConfig, TopicConfig
 from paper_database.db import Database
 from paper_database.fetcher.base import PaperMeta
 
@@ -37,7 +37,7 @@ class ClassificationResult:
 class LLMClassifier:
     """Async classifier using LLM API calls (OpenAI-compatible) via httpx."""
 
-    def __init__(self, config: ClassifierConfig, deliberation: Optional[DeliberationConfig] = None):
+    def __init__(self, config: LLMConfig, deliberation: Optional[DeliberationConfig] = None):
         self.api_base_url = config.api_base_url.rstrip("/")
         self.model = config.model
         self.max_tokens = config.max_tokens
@@ -55,7 +55,7 @@ class LLMClassifier:
         if not self.api_key:
             raise ValueError(
                 f"{config.provider} API key not configured.\n"
-                "请在 config/classifier.yaml 的 providers 中设置 api_key，"
+                "请在 config/llm.yaml 的 providers 中设置 api_key，"
                 "或使用 {env:VAR_NAME} 引用环境变量。\n"
                 "配置示例: api_key: \"{env:API_KEY}\" 或 api_key: \"sk-your-key-here\""
             )

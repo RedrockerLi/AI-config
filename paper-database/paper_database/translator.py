@@ -13,7 +13,7 @@ from typing import Optional, Callable
 
 import httpx
 
-from paper_database.config import ClassifierConfig
+from paper_database.config import LLMConfig
 from paper_database.db import Database
 
 
@@ -30,7 +30,7 @@ class Translator:
     """Async translator using LLM API for abstract → Chinese translation."""
 
     def __init__(
-        self, config: ClassifierConfig, max_concurrency: int | None = None
+        self, config: LLMConfig, max_concurrency: int | None = None
     ):
         self.api_base_url = config.api_base_url.rstrip("/")
         self.model = config.model
@@ -45,7 +45,7 @@ class Translator:
         if not self.api_key:
             raise ValueError(
                 "API key not configured. "
-                "请在 config/classifier.yaml 的 providers 中设置 api_key，"
+                "请在 config/llm.yaml 的 providers 中设置 api_key，"
                 "或使用 {env:VAR_NAME} 引用环境变量。"
             )
 
