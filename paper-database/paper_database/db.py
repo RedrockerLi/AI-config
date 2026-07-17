@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS paper (
     doi TEXT DEFAULT '',
     abstract TEXT DEFAULT '',
     abstract_source TEXT DEFAULT '',
+    abstract_cn TEXT DEFAULT '',
     citation_count INTEGER DEFAULT 0,
     fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     abstract_fetched_at TIMESTAMP,
@@ -93,6 +94,7 @@ CREATE TABLE IF NOT EXISTS paper (
     doi TEXT DEFAULT '',
     abstract TEXT DEFAULT '',
     abstract_source TEXT DEFAULT '',
+    abstract_cn TEXT DEFAULT '',
     citation_count INTEGER DEFAULT 0,
     fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     abstract_fetched_at TIMESTAMP,
@@ -213,6 +215,11 @@ class Database:
     def init_db(self):
         """Create venue + paper tables (main database)."""
         self.conn.executescript(PAPER_SCHEMA)
+        # Migrate: add abstract_cn column to paper if missing
+        try:
+            self.conn.execute("ALTER TABLE paper ADD COLUMN abstract_cn TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
         self.conn.commit()
 
     def init_survey_db(self):
@@ -224,6 +231,11 @@ class Database:
         # Migrate: add flag column to paper if missing (older survey DBs)
         try:
             self.conn.execute("ALTER TABLE paper ADD COLUMN flag TEXT DEFAULT 'unclaimed'")
+        except sqlite3.OperationalError:
+            pass
+        # Migrate: add abstract_cn column to paper if missing
+        try:
+            self.conn.execute("ALTER TABLE paper ADD COLUMN abstract_cn TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass
 
@@ -567,6 +579,41 @@ class Database:
         ).fetchone()
         return row["cnt"] if row else 0
 
+    def count_papers_with_abstract_cn(self) -> int:
+        """Count papers that have a Chinese translation of the abstract."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM paper WHERE abstract_cn != '' AND abstract_cn IS NOT NULL"
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    def count_papers_needing_translation(self) -> int:
+        """Count papers that have an English abstract but no Chinese translation."""
+        row = self.conn.execute(
+            """SELECT COUNT(*) as cnt FROM paper
+               WHERE abstract != '' AND abstract IS NOT NULL
+                 AND (abstract_cn = '' OR abstract_cn IS NULL)"""
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    def get_papers_needing_translation(self, limit: int = 500) -> list[dict]:
+        """Get papers with English abstract but no Chinese translation."""
+        rows = self.conn.execute(
+            """SELECT * FROM paper
+               WHERE abstract != '' AND abstract IS NOT NULL
+                 AND (abstract_cn = '' OR abstract_cn IS NULL)
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_paper_abstract_cn(self, dblp_key: str, abstract_cn: str):
+        """Update the Chinese translation for a paper's abstract."""
+        self.conn.execute(
+            "UPDATE paper SET abstract_cn = ? WHERE dblp_key = ?",
+            (abstract_cn, dblp_key),
+        )
+        self.conn.commit()
+
     def count_papers_without_topics(self) -> int:
         """Count papers that have no topic entries."""
         row = self.conn.execute(
@@ -735,12 +782,14 @@ class Database:
         for row in paper_rows:
             survey_db.conn.execute(
                 """INSERT INTO paper (id, dblp_key, title, year, venue_id,
-                   authors, doi, abstract, abstract_source, citation_count,
+                   authors, doi, abstract, abstract_source, abstract_cn,
+                   citation_count,
                    fetched_at, abstract_fetched_at, flag, ref_ids, s2_refs)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)""",
                 (row["id"], row["dblp_key"], row["title"], row["year"],
                  row["venue_id"], row["authors"], row["doi"],
                  row["abstract"], row["abstract_source"],
+                 row.get("abstract_cn", ""),
                  row["citation_count"], row["fetched_at"],
                  row["abstract_fetched_at"],
                  row["ref_ids"], row["s2_refs"]),
@@ -930,6 +979,43 @@ class Database:
             (survey_id, paper_id),
         ).fetchone()
         return dict(row) if row else None
+
+    def get_survey_papers_needing_translation(
+        self, survey_id: int, limit: int = 500
+    ) -> list[dict]:
+        """Get selected (include=1) papers with abstract but no Chinese translation.
+
+        Returns paper columns: id, dblp_key, title, abstract, abstract_cn.
+        """
+        rows = self.conn.execute(
+            """SELECT p.id, p.dblp_key, p.title, p.abstract,
+                      v.name as venue_name, v.key as venue_key
+               FROM survey_result sr
+               JOIN paper p ON sr.paper_id = p.id
+               JOIN venue v ON p.venue_id = v.id
+               WHERE sr.survey_id = ?
+                 AND sr.include = 1
+                 AND p.abstract != '' AND p.abstract IS NOT NULL
+                 AND (p.abstract_cn = '' OR p.abstract_cn IS NULL)
+               ORDER BY v.ccf_rank, p.year DESC, p.title
+               LIMIT ?""",
+            (survey_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_survey_papers_needing_translation(self, survey_id: int) -> int:
+        """Count selected papers in a survey that need translation."""
+        row = self.conn.execute(
+            """SELECT COUNT(*) as cnt
+               FROM survey_result sr
+               JOIN paper p ON sr.paper_id = p.id
+               WHERE sr.survey_id = ?
+                 AND sr.include = 1
+                 AND p.abstract != '' AND p.abstract IS NOT NULL
+                 AND (p.abstract_cn = '' OR p.abstract_cn IS NULL)""",
+            (survey_id,),
+        ).fetchone()
+        return row["cnt"] if row else 0
 
     def search_survey_papers(
         self, survey_id: int, query: str
@@ -1204,6 +1290,7 @@ class Database:
                          p.title AS paper_title, p.year AS paper_year,
                          p.doi AS paper_doi, p.authors AS paper_authors,
                          p.abstract AS paper_abstract,
+                         p.abstract_cn AS paper_abstract_cn,
                          p.citation_count AS paper_citation_count,
                          p.dblp_key AS paper_dblp_key,
                          sr.include{sr_cols}

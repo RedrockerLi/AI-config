@@ -31,6 +31,7 @@ from paper_database.fetcher.base import PaperMeta
 from paper_database.fetcher.dblp import DBLPFetcher
 from paper_database.fetcher.openalex import OpenAlexFetcher
 from paper_database.fetcher.semantic_scholar import SemanticScholarFetcher
+from paper_database.translator import Translator
 
 console = Console()
 
@@ -506,9 +507,12 @@ def paper_stats(ctx):
     abs_pct = stats['with_abstract'] / max(total, 1) * 100
     top_pct = stats['with_topics'] / max(total, 1) * 100
     ref_pct = stats['with_refs'] / max(total, 1) * 100
+    trans_cnt = db.count_papers_with_abstract_cn()
+    trans_pct = trans_cnt / max(total, 1) * 100
     console.print(
         f"  总计: {total} 篇\n"
         f"  有摘要: {stats['with_abstract']} 篇 ([green]{abs_pct:.1f}%[/])\n"
+        f"  有中文翻译: {trans_cnt} 篇 ([green]{trans_pct:.1f}%[/])\n"
         f"  有主题标签: {stats['with_topics']} 篇 ([green]{top_pct:.1f}%[/])\n"
         f"  有参考文献: {stats['with_refs']} 篇 ([green]{ref_pct:.1f}%[/])"
     )
@@ -534,6 +538,61 @@ def paper_stats(ctx):
         )
 
     console.print(table)
+
+
+@paper.command("translate")
+@click.option("--limit", "-l", type=int, default=0,
+              help="最大翻译数量 (0=全部)")
+@click.option("--concurrency", "-c", type=int, default=None,
+              help="并发数 (默认使用配置文件值)")
+@click.pass_context
+def paper_translate(ctx, limit, concurrency):
+    """使用 AI 将英文摘要翻译为中文 (abstract_cn)."""
+    config = _resolve_config(ctx.obj["config_dir"])
+    db = _get_db(ctx.obj["db_path"], ctx.obj["config_dir"])
+
+    # Check how many need translation
+    need = db.count_papers_needing_translation()
+    total_with_abs = db.count_papers_with_abstract()
+    already = db.count_papers_with_abstract_cn()
+
+    console.print(f"\n[bold]论文摘要翻译 (英 → 中)[/]")
+    console.print(f"  有英文摘要: {total_with_abs}")
+    console.print(f"  已翻译:     {already}")
+    console.print(f"  待翻译:     {need}")
+
+    if need == 0:
+        console.print("[green]✓[/] 全部已翻译，无需处理")
+        return
+
+    actual_limit = limit if limit > 0 else None
+    if actual_limit:
+        console.print(f"  本批上限:   {actual_limit}")
+
+    translator = Translator(config.classifier, max_concurrency=concurrency)
+
+    def progress_cb(done, _total, title, status):
+        t = title[:70]
+        if len(title) > 70:
+            t += "..."
+        if status == "translated":
+            s = "[green]✓[/]"
+        elif status == "empty_response":
+            s = "[yellow]空[/]"
+        else:
+            s = f"[red]✗ {status}[/]"
+        console.print(f"  [{done}] {s} {t}")
+
+    translated, failed = asyncio.run(
+        translator.translate_papers(
+            db, limit=actual_limit, progress_callback=progress_cb,
+        )
+    )
+
+    final_need = db.count_papers_needing_translation()
+    console.print(
+        f"\n[green]✓[/] 完成! 本批翻译: {translated} | 失败: {failed} | 剩余待翻译: {final_need}"
+    )
 
 
 # ── Survey subcommand ───────────────────────────────────────────
@@ -949,6 +1008,72 @@ def survey_export(ctx, survey_id, output):
     exporter = Exporter(survey_db)
     filepath = exporter.export(survey_id, topic_cfg, output_path)
     console.print(f"[green]✓[/] 导出完成: {filepath}")
+
+
+@survey.command("translate")
+@click.option("--survey-id", "-s", type=int, required=True)
+@click.option("--limit", "-l", type=int, default=0,
+              help="最大翻译数量 (0=全部)")
+@click.option("--concurrency", "-c", type=int, default=None,
+              help="并发数 (默认使用配置文件值)")
+@click.pass_context
+def survey_translate(ctx, survey_id, limit, concurrency):
+    """将 survey 中选中论文的英文摘要翻译为中文 (abstract_cn).
+
+    仅翻译 survey_result.include=1 的论文，已翻译的自动跳过。
+    """
+    config = _resolve_config(ctx.obj["config_dir"])
+    survey_db = _get_survey_db(survey_id, ctx.obj["config_dir"])
+
+    s = survey_db.get_survey(survey_id)
+    if s is None:
+        console.print(f"[red]✗[/] Survey #{survey_id} 不存在")
+        sys.exit(1)
+
+    # Count needs
+    total_included = survey_db.conn.execute(
+        "SELECT COUNT(*) as cnt FROM survey_result WHERE survey_id = ? AND include = 1",
+        (survey_id,),
+    ).fetchone()["cnt"]
+    need = survey_db.count_survey_papers_needing_translation(survey_id)
+
+    console.print(f"\n[bold]Survey #{survey_id} 摘要翻译 (英 → 中)[/]")
+    console.print(f"  已收录论文: {total_included}")
+    console.print(f"  待翻译:     {need}")
+
+    if need == 0:
+        console.print("[green]✓[/] 全部已翻译，无需处理")
+        return
+
+    actual_limit = limit if limit > 0 else None
+    if actual_limit:
+        console.print(f"  本批上限:   {actual_limit}")
+
+    translator = Translator(config.classifier, max_concurrency=concurrency)
+
+    def progress_cb(done, _total, title, status):
+        t = title[:70]
+        if len(title) > 70:
+            t += "..."
+        if status == "translated":
+            s = "[green]✓[/]"
+        elif status == "empty_response":
+            s = "[yellow]空[/]"
+        else:
+            s = f"[red]✗ {status}[/]"
+        console.print(f"  [{done}] {s} {t}")
+
+    translated, failed = asyncio.run(
+        translator.translate_survey_papers(
+            survey_db, survey_id,
+            limit=actual_limit, progress_callback=progress_cb,
+        )
+    )
+
+    final_need = survey_db.count_survey_papers_needing_translation(survey_id)
+    console.print(
+        f"\n[green]✓[/] 完成! 本批翻译: {translated} | 失败: {failed} | 剩余待翻译: {final_need}"
+    )
 
 
 # ── Entry point ─────────────────────────────────────────────────
