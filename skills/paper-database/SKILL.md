@@ -51,6 +51,8 @@ version: 0.3.0
 | 补全元数据+参考文献 | `cd $PAPER_DATABASE_HOME && python -m paper_database paper enrich --fetch-references` | 10–60min |
 | 先补 100 篇测试 | `cd $PAPER_DATABASE_HOME && python -m paper_database paper enrich --stop-after 100` | ~5min |
 | 查看论文统计 | `cd $PAPER_DATABASE_HOME && python -m paper_database paper stats` | <1s |
+| AI 翻译摘要为中文(全部) | `cd $PAPER_DATABASE_HOME && python -m paper_database paper translate` | 看数量 |
+| AI 翻译摘要(限 100 篇) | `cd $PAPER_DATABASE_HOME && python -m paper_database paper translate --limit 100` | ~5min |
 
 ### enrich 参数说明
 

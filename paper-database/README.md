@@ -81,6 +81,7 @@ python -m paper_database paper fetch
 python -m paper_database paper enrich [--doi-only] [--stop-after N] [--fetch-references]
 python -m paper_database paper fetch-all [--venue X --year Y]
 python -m paper_database paper stats
+python -m paper_database paper translate [--limit N] [-c N]   # AI 翻译摘要为中文
 
 # Survey
 python -m paper_database survey create --topic scheduling [--name "..."] [--venue-filter ...] [--year-filter ...]
@@ -96,6 +97,7 @@ python -m paper_database survey classify -s X --debug-paper "title"
 python -m paper_database survey preview -s X
 python -m paper_database survey export -s X [-o output.csv]
 python -m paper_database survey reset -s X
+python -m paper_database survey translate -s X [--limit N]  # 翻译选中论文摘要
 ```
 
 ## 分类特性

@@ -60,6 +60,8 @@ version: 0.3.0
 | 导出 CSV | `cd $PAPER_DATABASE_HOME && python -m paper_database survey export --survey-id <id>` | <2s |
 | 清空分类结果 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey reset --survey-id <id>` | <1s |
 | 删除调研 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey delete --survey-id <id>` | <1s |
+| 翻译选中论文摘要 | `cd $PAPER_DATABASE_HOME && python -m paper_database survey translate --survey-id <id>` | 看数量 |
+| 翻译选中论文(限 50 篇) | `cd $PAPER_DATABASE_HOME && python -m paper_database survey translate --survey-id <id> --limit 50` | ~3min |
 
 > **简写提示**：`--survey-id <id>` 可简写为 `-s <id>`，如 `survey classify -s 1 --limit 50`。以下场景示例中两种写法等价。
 
@@ -194,6 +196,24 @@ cd $PAPER_DATABASE_HOME && python -m paper_database survey create --topic <topic
 cd $PAPER_DATABASE_HOME && python -m paper_database survey classify -s <id>
 cd $PAPER_DATABASE_HOME && python -m paper_database survey classify -s <id> --deliberate 3
 ```
+
+### 场景7: 翻译选中论文摘要
+用户: "分类结果出来了，帮我把入选论文的摘要翻译成中文"
+
+输出：
+
+```bash
+# 先看有多少待翻译
+cd $PAPER_DATABASE_HOME && python -m paper_database survey stats --survey-id <id>
+
+# 翻译全部选中论文的摘要（仅 include=1，已翻译自动跳过）
+cd $PAPER_DATABASE_HOME && python -m paper_database survey translate --survey-id <id>
+
+# 或先翻 50 篇看看质量
+cd $PAPER_DATABASE_HOME && python -m paper_database survey translate --survey-id <id> --limit 50
+```
+
+翻译结果保存到 `paper.abstract_cn` 列。导出 CSV 时自动包含 `paper_abstract_cn` 列。`-c N` 可调整并发数。
 
 ## 分类器配置
 
