@@ -1,176 +1,106 @@
 # Paper Database — 文献库管理系统
 
-从 DBLP、OpenAlex、Semantic Scholar 自动拉取论文元数据、摘要、主题标签、参考文献，通过 LLM API 并发分类筛选，支持多轮磋商投票，导出 CSV。
+从 DBLP 拉论文 → OpenAlex / Semantic Scholar 补全元数据 → LLM 并发分类筛选 → 导出 CSV / Markdown。
 
 ## 快速开始
 
 ```bash
 pip install -e .
 python -m paper_database venue init
-python -m paper_database paper fetch-all --venue hpca --year 2024   # 拉论文+元数据
-python -m paper_database survey create --topic scheduling --name "测试调研"
-python -m paper_database survey classify -s 1 --dry-run --limit 3   # 先检查 prompt
-python -m paper_database survey classify -s 1 --limit 10            # 正式分类
-python -m paper_database survey classify -s 1 --deliberate 3        # 磋商投票
+python -m paper_database paper fetch-all                     # 拉全部论文+元数据
+python -m paper_database survey create --topic scheduling    # 创建调研
+python -m paper_database survey classify -s 1 --dry-run --limit 3
+python -m paper_database survey classify -s 1               # 正式分类
 python -m paper_database survey preview -s 1
-python -m paper_database survey export -s 1
+python -m paper_database survey export -s 1                  # CSV
+python -m paper_database survey export-md -s 1               # Markdown
 ```
-
-## 架构
-
-```
-用户 ─┬─ 终端直接跑 CLI      → classifier.py → httpx.AsyncClient → LLM API → SQLite
-      └─ AI 工具 (Skills)    → 翻译成上述 CLI 命令输出给用户
-```
-
-AI 工具不直接执行耗时命令，而是生成命令供用户在终端运行。
-
-## 配置
-
-三个 YAML 文件在 `config/` 目录：
-
-**`venues.yaml`** — 检索的会议/期刊。预填 CCF-A 体系结构 8 个 venue + CCF-B 13 个 venue。
-
-```yaml
-venues:
-  - key: isca
-    name: "International Symposium on Computer Architecture"
-    type: conference
-    ccf_rank: A
-    dblp_url_prefix: "conf/isca"
-    year_start: 2016
-    year_end: 2026
-```
-
-**`topics.yaml`** — 调研主题定义（keywords、prompt_template、output.columns）。可添加多个 topic。
-
-**`classifier.yaml`** — 分类器多 provider 配置 + 磋商策略：
-
-```yaml
-classifier:
-  provider: deepseek         # 当前使用的 provider
-  providers:
-    deepseek:
-      api_base_url: "https://api.deepseek.com"
-      api_key: "{env:DEEPSEEK_API_KEY}"    # {env:VAR} 自动读取环境变量
-      model: "deepseek-v4-pro"
-      enable_thinking: true
-    localhost:
-      api_base_url: "http://localhost:8800"  # 不要加 /v1 后缀
-      api_key: "your-key"
-      model: "minimax-m27"
-  max_concurrency: 32
-  timeout: 60
-  max_retries: 3
-  deliberation:               # 磋商投票策略
-    strategy: majority        # majority | supermajority | consensus
-    rounds: 3
-```
-
-`api_key` 支持 `{env:VAR_NAME}` 占位符。`api_base_url` 不要加 `/v1` 后缀（代码自动追加 `/v1/chat/completions`）。
 
 ## CLI 命令
 
 ```bash
 # Venue
-python -m paper_database venue init
+python -m paper_database venue init                          # 同步 venues.yaml → DB
 python -m paper_database venue list
 
 # Paper
-python -m paper_database paper fetch
-python -m paper_database paper enrich [--doi-only] [--stop-after N] [--fetch-references]
-python -m paper_database paper fetch-all [--venue X --year Y]
+python -m paper_database paper fetch [-v venue] [-y year]    # DBLP 论文列表
+python -m paper_database paper enrich [--doi-only] [--fetch-references]
+python -m paper_database paper fetch-all [-v venue] [-y year]  # fetch + enrich
 python -m paper_database paper stats
-python -m paper_database paper translate [--limit N] [-c N]   # AI 翻译摘要为中文
+python -m paper_database paper translate [--limit N]         # AI 摘要英→中
 
 # Survey
-python -m paper_database survey create --topic scheduling [--name "..."] [--venue-filter ...] [--year-filter ...]
+python -m paper_database survey create -t topic [-n name] [--venue-filter ...] [--year-filter ...]
 python -m paper_database survey list
 python -m paper_database survey stats -s X
-python -m paper_database survey delete -s X
-
-# Classify
-python -m paper_database survey classify -s X [--dry-run] [--limit N] [--no-export] [--deliberate N]
-python -m paper_database survey classify -s X --debug-paper "title"
-
-# Export
+python -m paper_database survey classify -s X [--dry-run] [--limit N] [--deliberate N]
+python -m paper_database survey classify -s X -d "title"     # 调试单篇
 python -m paper_database survey preview -s X
-python -m paper_database survey export -s X [-o output.csv]
-python -m paper_database survey reset -s X
-python -m paper_database survey translate -s X [--limit N]  # 翻译选中论文摘要
+python -m paper_database survey export -s X [-o output]      # CSV
+python -m paper_database survey export-md -s X [-o dir]      # Markdown 按 venue 分文件
+python -m paper_database survey translate -s X [--limit N]   # 翻译入选摘要
+python -m paper_database survey reset -s X                   # 清空分类，保留论文
+python -m paper_database survey delete -s X
 ```
 
-## 分类特性
-
-### 磋商机制 (Deliberation)
-
-LLM 输出有随机性。`--deliberate N` 每篇论文并行跑 N 轮分类，投票聚合结果：
+### 磋商投票
 
 ```bash
-python -m paper_database survey classify -s 1 --deliberate 3
-python -m paper_database survey classify -s 1 --debug-paper "CGRA" --deliberate 3
+python -m paper_database survey classify -s 1 --deliberate 3   # 每篇并行 3 轮投票
 ```
 
-三种投票策略（`config/classifier.yaml` → `deliberation.strategy`）：
+策略配置在 `config/classifier.yaml`：`majority` / `supermajority` / `consensus`。
 
-| 策略 | 规则 |
+## Markdown 导出
+
+每个 venue 一个 `.md` 文件，`#` = venue 名，`##` = 年份，论文按 YAML 中 `rank` 字段排序：
+
+```bash
+python -m paper_database survey export-md -s 1      # → results/survey_1_md/*.md
+```
+
+## 配置
+
+三个 YAML 文件在 `config/`：
+
+| 文件 | 内容 |
 |------|------|
-| `majority` | 多数决，平局→收录 |
-| `supermajority` | 赞成率 ≥ 0.67 才收录 |
-| `consensus` | 全票通过才收录 |
+| `venues.yaml` | 会议/期刊定义，预填 22 个 CCF-A/B venue |
+| `topics.yaml` | 调研主题：prompt template + 输出字段 (columns) |
+| `classifier.yaml` | LLM provider 多配置 + 磋商策略 |
 
-结果记录置信度（如 `_deliberation_confidence: 2/3`）。
+**分类器示例：**
 
-### 增强输入 (Topics + References)
+```yaml
+classifier:
+  provider: deepseek
+  providers:
+    deepseek:
+      api_base_url: "https://api.deepseek.com"
+      api_key: "{env:DEEPSEEK_API_KEY}"   # 自动读环境变量
+      model: "deepseek-v4-pro"
+      enable_thinking: true
+    localhost:
+      api_base_url: "http://localhost:8800"
+      model: "minimax-m27"
+  max_concurrency: 32
+```
 
-分类 prompt 不仅含标题+摘要，还包括主题标签和参考文献标题，比只看摘要更能判断研究脉络。数据来源：
-
-| 数据类型 | 来源 | 额外开销 |
-|---------|------|:--:|
-| 摘要 | OpenAlex / S2 | — |
-| 主题标签 (concepts) | OpenAlex | 零 |
-| 参考文献标题 | S2 优先 → OpenAlex 兜底 | 零 (S2) / 二阶段 API (OpenAlex) |
-
-参考文献通过 `reference_work` 缓存表去重，同一篇被引论文全局只解析一次。
+`api_base_url` 不加 `/v1` 后缀（代码自动追加 `/v1/chat/completions`）。
 
 ## API Keys
 
-### 分类
-
-在 `config/classifier.yaml` 中配置各 provider 的 `api_key`，支持 `{env:VAR_NAME}` 占位符。
-
-### 元数据补全 (`enrich`)
-
-流程：**OpenAlex (主)** → **Semantic Scholar (补充)**。
-
-| Key | 用途 | 获取 |
+| Key | 来源 | 用途 |
 |-----|------|------|
-| `OPENALEX_API_KEY` | OpenAlex — 摘要 + concepts + 参考文献 ID | https://openalex.org/settings/api |
-| `S2_API_KEY` | Semantic Scholar — 摘要 + 参考文献标题 | https://www.semanticscholar.org/product/api |
+| `OPENALEX_API_KEY` | [openalex.org](https://openalex.org/settings/api) | 摘要 + concepts + 参考文献 |
+| `S2_API_KEY` | [semanticscholar.org](https://www.semanticscholar.org/product/api) | 摘要 + 参考文献标题（补充） |
+| `DEEPSEEK_API_KEY` | [deepseek.com](https://platform.deepseek.com) | LLM 分类 |
 
-```bash
-export OPENALEX_API_KEY="your-key"
-export S2_API_KEY="your-key"          # 可选
-```
-
-```bash
-python -m paper_database paper enrich                    # 补全所有缺失
-python -m paper_database paper enrich --fetch-references # 同时获取参考文献
-python -m paper_database paper enrich --doi-only         # 仅批量查询，低成本
-```
-
-`enrich` 自动检测三种缺失（摘要、主题标签、参考文献），已完整的自动跳过，支持断点续跑。`fetch-abstracts` 保留为隐藏别名。
+流程：OpenAlex(主) → S2(补充)。无 Key 也可用（OpenAlex 每天 100 free credits）。
 
 ## 数据库
 
-`papers.db` (SQLite, gitignored):
+`papers.db` (SQLite, gitignored) — `venue` / `paper` / `paper_topic` / `reference_work`。
 
-| 表 | 内容 |
-|----|------|
-| `venue` / `paper` | 论文元数据 |
-| `paper_topic` | 主题标签（OpenAlex concepts） |
-| `paper_reference` | 参考文献列表（W+ID + S2 标题） |
-| `reference_work` | ID→标题字典表（引用去重） |
-| `survey` / `survey_result` | 调研分类结果 |
-
-多机器使用：拷贝 `papers.db` 或在每台机器上重新 `fetch-all`。
+每个 survey 独立 `surveys/survey_N.db`（论文快照 + 分类结果），结构由 topics.yaml 动态定义。

@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS paper (
     fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     abstract_fetched_at TIMESTAMP,
     ref_ids TEXT DEFAULT '',
-    s2_refs TEXT DEFAULT ''
+    s2_refs TEXT DEFAULT '',
+    flag TEXT DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_paper_venue_year ON paper(venue_id, year);
@@ -218,6 +219,11 @@ class Database:
         # Migrate: add abstract_cn column to paper if missing
         try:
             self.conn.execute("ALTER TABLE paper ADD COLUMN abstract_cn TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        # Migrate: add flag column to paper if missing
+        try:
+            self.conn.execute("ALTER TABLE paper ADD COLUMN flag TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass
         self.conn.commit()
@@ -927,6 +933,13 @@ class Database:
         )
         self.conn.commit()
 
+    def reset_translating_flags(self):
+        """Crash recovery: reset stale 'translating' flags to ''."""
+        self.conn.execute(
+            "UPDATE paper SET flag = '' WHERE flag = 'translating'"
+        )
+        self.conn.commit()
+
     def claim_papers(
         self, survey_id: int, limit: int
     ) -> list[dict]:
@@ -959,6 +972,70 @@ class Database:
                 self.conn.execute(
                     f"UPDATE paper SET flag = 'claimed' WHERE id IN ({placeholders})",
                     paper_ids,
+                )
+
+        return [dict(r) for r in rows]
+
+    def claim_papers_for_translation(
+        self, survey_id: int, limit: int
+    ) -> list[dict]:
+        """Atomically claim include=1 papers for translation.
+
+        SELECT + UPDATE in a single transaction — same pattern as claim_papers().
+        Only claims papers with abstract_cn empty and flag != 'translating'.
+        """
+        with self.conn:  # transaction
+            rows = self.conn.execute(
+                """SELECT p.id, p.dblp_key, p.title, p.abstract,
+                          v.name as venue_name, v.key as venue_key
+                   FROM survey_result sr
+                   JOIN paper p ON sr.paper_id = p.id
+                   JOIN venue v ON p.venue_id = v.id
+                   WHERE sr.survey_id = ?
+                     AND sr.include = 1
+                     AND p.abstract != '' AND p.abstract IS NOT NULL
+                     AND (p.abstract_cn = '' OR p.abstract_cn IS NULL)
+                     AND p.flag != 'translating'
+                   ORDER BY v.ccf_rank, p.year DESC, p.title
+                   LIMIT ?""",
+                (survey_id, limit),
+            ).fetchall()
+
+            if rows:
+                ids = [r["id"] for r in rows]
+                placeholders = ",".join("?" * len(ids))
+                self.conn.execute(
+                    f"UPDATE paper SET flag = 'translating' WHERE id IN ({placeholders})",
+                    ids,
+                )
+
+        return [dict(r) for r in rows]
+
+    def claim_main_papers_for_translation(self, limit: int) -> list[dict]:
+        """Atomically claim papers for translation in the main DB.
+
+        No survey join — works on paper table directly.
+        """
+        with self.conn:  # transaction
+            rows = self.conn.execute(
+                """SELECT p.id, p.dblp_key, p.title, p.abstract,
+                          v.name as venue_name, v.key as venue_key
+                   FROM paper p
+                   JOIN venue v ON p.venue_id = v.id
+                   WHERE p.abstract != '' AND p.abstract IS NOT NULL
+                     AND (p.abstract_cn = '' OR p.abstract_cn IS NULL)
+                     AND p.flag != 'translating'
+                   ORDER BY v.ccf_rank, p.year DESC, p.title
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+
+            if rows:
+                ids = [r["id"] for r in rows]
+                placeholders = ",".join("?" * len(ids))
+                self.conn.execute(
+                    f"UPDATE paper SET flag = 'translating' WHERE id IN ({placeholders})",
+                    ids,
                 )
 
         return [dict(r) for r in rows]

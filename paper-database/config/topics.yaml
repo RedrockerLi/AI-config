@@ -280,7 +280,11 @@ topics:
         - field: priority
           header: "优先级"
           width: 8
-          deliberation: true
+          delriberation: true
+          rank: 
+            - "S"
+            - "A"
+            - "B"
         - field: level
           header: "Level"
           width: 14
@@ -289,6 +293,9 @@ topics:
           header: "Platform"
           width: 16
           deliberation: true
+        - field: paper_abstract_cn
+          header: 摘要翻译
+          width: 50
         - field: problem_goal
           header: "问题/目标"
           width: 50

@@ -40,6 +40,7 @@ class OutputColumn:
     width: int = 20
     transform: str = ""       # "join_comma" | "bool_to_yes_no" | "percent" | ""
     deliberation: bool = False  # 磋商模式下是否对该字段投票取众数
+    rank: list[str] = field(default_factory=list)  # 值排序优先级，如 ["S","A","B"]
 
     @classmethod
     def from_dict(cls, d: dict) -> "OutputColumn":
@@ -49,6 +50,7 @@ class OutputColumn:
             width=d.get("width", 20),
             transform=d.get("transform", ""),
             deliberation=d.get("deliberation", False),
+            rank=d.get("rank", []),
         )
 
 

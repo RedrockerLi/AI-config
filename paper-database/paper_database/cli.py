@@ -1010,6 +1010,33 @@ def survey_export(ctx, survey_id, output):
     console.print(f"[green]✓[/] 导出完成: {filepath}")
 
 
+@survey.command("export-md")
+@click.option("--survey-id", "-s", type=int, required=True)
+@click.option("--output-dir", "-o", default="results", help="输出目录 (默认 results)")
+@click.pass_context
+def survey_export_md(ctx, survey_id, output_dir):
+    """导出结果到 Markdown，每个 venue 一个文件."""
+    config = _resolve_config(ctx.obj["config_dir"])
+    survey_db = _get_survey_db(survey_id, ctx.obj["config_dir"])
+
+    s = survey_db.get_survey(survey_id)
+    if s is None:
+        console.print(f"[red]✗[/] Survey #{survey_id} 不存在")
+        sys.exit(1)
+
+    topic_cfg = config.get_topic(s["topic_key"])
+    if topic_cfg is None:
+        console.print(f"[red]✗[/] Topic 配置不存在")
+        sys.exit(1)
+
+    # Output to results/survey_{id}_md/
+    md_dir = Path(output_dir) / f"survey_{survey_id}_md"
+
+    exporter = Exporter(survey_db)
+    files = exporter.export_markdown(survey_id, topic_cfg, md_dir)
+    console.print(f"[green]✓[/] Markdown 导出完成: {len(files)} 个文件 → {md_dir}")
+
+
 @survey.command("translate")
 @click.option("--survey-id", "-s", type=int, required=True)
 @click.option("--limit", "-l", type=int, default=0,

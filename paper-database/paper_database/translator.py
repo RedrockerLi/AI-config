@@ -78,9 +78,10 @@ class Translator:
 
         Returns (translated, failed).
         """
+        db.reset_translating_flags()
         return await self._run_translation(
             db=db,
-            get_papers_fn=lambda l: db.get_papers_needing_translation(l),
+            get_papers_fn=lambda l: db.claim_main_papers_for_translation(l),
             update_fn=lambda dblp_key, text: db.update_paper_abstract_cn(
                 dblp_key, text
             ),
@@ -97,11 +98,17 @@ class Translator:
     ) -> tuple[int, int]:
         """Translate selected (include=1) papers in a survey DB.
 
+        Uses atomic claim (flag='translating') to prevent duplicate feeds
+        from the Feeder/Worker race condition.
+
         Returns (translated, failed).
         """
+        # Crash recovery: reset stale translating flags from prior runs
+        db.reset_translating_flags()
+
         return await self._run_translation(
             db=db,
-            get_papers_fn=lambda l: db.get_survey_papers_needing_translation(
+            get_papers_fn=lambda l: db.claim_papers_for_translation(
                 survey_id, l
             ),
             update_fn=lambda dblp_key, text: db.update_paper_abstract_cn(
