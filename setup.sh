@@ -13,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 SETUP_SCRIPTS=(
     "$SCRIPT_DIR/scripts/setup-paper-database.sh"
+    "$SCRIPT_DIR/scripts/link-skills.sh"
 )
 
 # ── 执行 ─────────────────────────────────────────────────────────
