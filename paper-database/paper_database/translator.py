@@ -17,13 +17,22 @@ from paper_database.config import LLMConfig
 from paper_database.db import Database
 
 
-TRANSLATION_PROMPT = """Translate the following academic paper abstract from English to Chinese.
-Output ONLY the Chinese translation — no explanations, no notes, no markdown formatting.
+TRANSLATION_PROMPT = """Translate the abstract of the following academic paper from English to Chinese.
 
-Title: {title}
+The paper title and keywords are provided only as context to improve translation accuracy.
+
+Output ONLY the Chinese translation of the abstract.
+Do NOT output the title, keywords, explanations, notes, or markdown.
+
+Title:
+{title}
+
+Keywords:
+{keywords}
 
 Abstract:
-{abstract}"""
+{abstract}
+"""
 
 
 class Translator:
@@ -63,9 +72,11 @@ class Translator:
 
     # ── Public API ───────────────────────────────────────────
 
-    async def translate_abstract(self, title: str, abstract: str) -> str:
-        """Translate a single abstract. Returns Chinese text."""
-        prompt = self._build_prompt(title, abstract)
+    async def translate_abstract(
+        self, title: str, abstract: str, keywords: str = ""
+    ) -> str:
+        """Translate title + abstract. Returns Chinese text."""
+        prompt = self._build_prompt(title, abstract, keywords)
         return await self._call_api(prompt)
 
     async def translate_papers(
@@ -124,8 +135,11 @@ class Translator:
 
     # ── Internals ────────────────────────────────────────────
 
-    def _build_prompt(self, title: str, abstract: str) -> str:
-        return TRANSLATION_PROMPT.format(title=title, abstract=abstract)
+    def _build_prompt(self, title: str, abstract: str, keywords: str = "") -> str:
+        return TRANSLATION_PROMPT.format(
+            title=title, abstract=abstract,
+            keywords=keywords if keywords else "N/A",
+        )
 
     async def _call_api(self, prompt: str) -> str:
         """Call chat completions API. Returns cleaned response text.
@@ -271,6 +285,7 @@ class Translator:
                     if paper is None:
                         return
 
+                    paper_id = paper.get("id", 0)
                     title = paper.get("title", "")
                     abstract = paper.get("abstract", "")
                     dblp_key = paper.get("dblp_key", "")
@@ -279,8 +294,16 @@ class Translator:
                         queue.task_done()
                         continue
 
+                    # Fetch keywords for context
+                    keywords_list = (
+                        db.get_paper_topics(paper_id) if paper_id else []
+                    )
+                    keywords_str = ", ".join(keywords_list[:10])
+
                     try:
-                        cn_text = await self.translate_abstract(title, abstract)
+                        cn_text = await self.translate_abstract(
+                            title, abstract, keywords_str
+                        )
                         if cn_text:
                             update_fn(dblp_key, cn_text)
                             translated += 1
