@@ -24,6 +24,10 @@ main() {
     echo "=============================================="
     echo ""
 
+    # ── 初始化 submodule（paper-database 为独立仓库）────────
+    git submodule update --init --recursive
+    echo ""
+
     for script in "${SETUP_SCRIPTS[@]}"; do
         if [[ -x "$script" ]]; then
             bash "$script" "$@"

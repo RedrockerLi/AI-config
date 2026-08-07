@@ -5,14 +5,16 @@
 ## 快速开始
 
 ```bash
-git clone <this-repo> ~/AI-config
+git clone --recurse-submodules <this-repo> ~/AI-config
 cd ~/AI-config
 ./setup.sh && source ~/.bashrc
 ```
 
+> `paper-database` 以 submodule 引入；若已 clone 未带 `--recurse-submodules`，执行 `git submodule update --init --recursive`。
+
 ## 内容
 
-**[paper-database](paper-database/)** — 文献库管理系统。从 DBLP 拉取论文 → OpenAlex / Semantic Scholar 补全元数据（摘要、主题标签、参考文献）→ LLM 并发分类筛选，支持磋商投票，导出 CSV。[→ 详细文档](paper-database/README.md)
+**[paper-database](paper-database/)** — 文献库管理系统。从 DBLP 拉取论文 → OpenAlex / Semantic Scholar 补全元数据（摘要、主题标签、参考文献）→ LLM 并发分类筛选，支持磋商投票，导出 CSV。[→ 详细文档](paper-database/README.md)（独立仓库 [RedrockerLi/Paper-Database](https://github.com/RedrockerLi/Paper-Database)，本仓库以 submodule 引用）
 
 **Skills** — AI 工具的指令文件，通过 `setup.sh` 硬链接部署：
 

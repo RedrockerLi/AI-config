@@ -1,0 +1,3 @@
+[submodule "paper-database"]
+	path = paper-database
+	url = git@github.com:RedrockerLi/Paper-Database.git
