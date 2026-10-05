@@ -10,9 +10,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ── 子脚本清单（按需添加）────────────────────────────────────────
-
+# "$SCRIPT_DIR/scripts/setup-paper-database.sh"
 SETUP_SCRIPTS=(
-    "$SCRIPT_DIR/scripts/setup-paper-database.sh"
     "$SCRIPT_DIR/scripts/link-skills.sh"
 )
 
