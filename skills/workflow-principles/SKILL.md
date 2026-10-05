@@ -1,5 +1,5 @@
 ---
-name: workflow
+name: workflow-principles
 description: 为软件任务设计和调整多 agent 协作与 workflow。用于推理任务分解、并行收益、共享决策、上下文传递、集成验证和动态重规划，尤其适合跨模块开发、复杂排障、迁移与设计探索。关注协作的工作原则。
 ---
 
